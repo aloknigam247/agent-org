@@ -8,7 +8,7 @@
       "children": [],
       "mode": "Leaf",
       "charter": {
-        "domain": ["**/*"],
+        "domain": ["**"],
         "concerns": [
           "owns the entire repository until the first split",
           "does all work directly; proposes a gated split when overloaded"

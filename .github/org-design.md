@@ -11,16 +11,17 @@ Read this when in doubt. `org.json` is the live state; this document is the law.
 
 A repository is **completely owned by agents** when two properties hold and *stay* true:
 
-- **Coverage (spatial ownership).** Every tracked path is owned by exactly one **leaf** node. No
-  orphan files, no overlaps. A parent owns only the **seams** — the contracts *between* its children.
+- **Coverage (spatial ownership).** Every tracked path is owned by **exactly one node**. Most paths
+  are owned by a **leaf**; the shared/contract files common to a parent's children are owned by that
+  **parent** (its *shared set*). No orphans, no double-owners.
 - **Self-sufficiency (epistemic ownership).** Every node externalizes what it needs to maintain its
   domain without re-deriving it from source each time: a **wiki** (knowledge), **skills**
   (procedures), and **tools** (automation).
 
-These properties are upheld **intrinsically**, with no separate machinery:
+These properties are upheld **intrinsically**, with no runtime judge:
 
-- the **splitter** preserves coverage as part of every atomic split (§2.2, §3.6), backed by
-  `org.schema.json`;
+- the **owner-oracle** (`.github/tools/owner_validator.py`, §2.7) computes `owner(path)` and is run by
+  the `splitter` on every split and at every integration gate — coverage is never eyeballed;
 - **nodes** uphold self-sufficiency by discipline — the payback rule, single-writer, and freshness
   (§3).
 
@@ -36,7 +37,7 @@ The organizational mechanics. If you know the earlier attempt, skim to §2.2 and
 
 - **Host** — the Copilot CLI session itself. Domain-less. It hardcodes the entry point to `main`,
   gates splits to the human, and is the **only** writer of `org.json`. It never writes feature code.
-- **main** — the root node. Owns the whole repo (`**/*`) until the first split.
+- **main** — the root node. Owns the whole repo (`**`) until the first split.
 - **splitter** — a meta-agent that executes an approved split as one validated, git-committed
   transaction.
 - **nodes** — the working agents. Each is a `Parent` or a `Leaf`:
@@ -48,27 +49,48 @@ The organizational mechanics. If you know the earlier attempt, skim to §2.2 and
 
 A node's **charter** = `{ domain, concerns, excludes }` (see `org.schema.json`):
 
-- `domain` — glob patterns the node owns.
+- `domain` — glob patterns the node owns (gitignore semantics; §2.7).
 - `concerns` — human-readable responsibilities inside the domain.
-- `excludes` — globs inside `domain` that are owned elsewhere (a child, or a sibling via the common
-  parent). **Every exclude must be covered by another node's domain.**
+- `excludes` — globs a node's `domain` would match but that are owned elsewhere (a cross-cutting
+  sibling). A node's **effective domain** = `domain` − `excludes`.
 
-The schema validates structure. The following **coverage rules** — which the `splitter` enforces on
-every split (§3.6) — complete the definition of coverage and are the direct fix for the earlier
-"disjoint include/exclude" bug:
+Ownership is **one computed function**, `owner(path)` (the oracle, §2.7):
 
-1. Every tracked path matches exactly one **leaf** domain (coverage, no gaps).
-2. No two leaves overlap.
-3. Every `exclude` glob is covered by some other node's `domain` (no disjoint excludes).
-4. For every parent: `⋃ children.domain ⊆ parent.domain`, and
-   `(⋃ children.domain) ∪ parent.retained == parent.domain` (no gaps, no leaks).
-5. Tree is acyclic, single-root; `parent`/`children` back-references agree; a `Leaf` has no children;
-   a `Parent` has ≥ 2 children.
+> `owner(path)` = the single node whose **effective domain** matches `path` — a **leaf** for most
+> paths, or a **parent** for the shared/contract files common to its children. **Exactly one** node
+> must match.
 
-Canonical example (the Spec Review Platform): `main` (Parent) retains root/org/contract files and
-excludes `src/Api/**`, `tests/**`, `src/web/**`, `infra/**`, `**/Dockerfile`, … which are the
-domains of `backend`, `frontend`, and `infra`. Coverage holds because every excluded glob is some
-child's domain, and the children plus `main`'s retained set reconstruct `**/*`.
+This replaces the earlier "exactly one *leaf*" rule (which contradicted parents owning seams) and the
+hand-authored include/exclude bookkeeping that produced the "disjoint charter" bug. **Coverage rules**
+(checked by the oracle):
+
+1. **Covered** — every tracked path matches exactly one node's effective domain. **0** matches is
+   `UNOWNED`; **> 1** is `overlap`.
+2. **Parent shared-set** — a Parent's `domain` is an *explicit shared set* (root/org/contract files
+   common to its children), **never** `**`; it does not blanket-own its children's code. A Parent
+   therefore needs no big `excludes` list — it simply does not claim what its children own.
+3. **Excludes re-covered** — a path one node excludes is owned by exactly one *other* node. (A
+   materialized exclude that nothing else covers simply surfaces as `UNOWNED`.)
+4. **Tree shape** — acyclic, single-root; `parent`/`children` back-references agree; a `Leaf` has no
+   children; a `Parent` has ≥ 2 children.
+
+`UNOWNED` is a **first-class, actionable** state, not a silent gap: a new path matching no node is
+resolved by assigning it to an existing child, proposing a gated new child (a new domain), or — only
+if it is genuinely shared — the parent. The integration gate (§2.7) runs the oracle on **every**
+change, so drift is caught when a file appears, not only at split time.
+
+Canonical example (the Spec Review Platform):
+
+- `backend` — domain `src/Api/**`, `tests/**`; excludes `**/Dockerfile`.
+- `frontend` — domain `src/web/**`; excludes `**/Dockerfile`.
+- `infra` — domain `infra/**`, `**/Dockerfile`, `azure.yaml`, `docker-compose*.yml`.
+- `main` (Parent) — shared set `README.md`, `org.json`, `.github/**`, `wiki/**/*.contract.md`,
+  root config.
+
+`src/Api/Dockerfile` → `backend`'s domain matches but excludes it → **`infra`** owns it (a
+cross-cutting aspect resolved by one exclude). `src/Api/Program.cs` → **`backend`** only. `README.md`
+→ **`main`**'s shared set only. A new `src/shared/types.ts` matching no node → **`UNOWNED`** →
+resolved to a child or a gated new child.
 
 ### 2.3 Growth — gated, one-way splits
 
@@ -110,9 +132,29 @@ the node completes its work. This is a hard fix for the "concurrent agents colli
 | `.github/org-design.md` | This design. | Humans/kernel. |
 | `.github/copilot-instructions.md` | Host manual. | Humans/kernel. |
 | `.github/agents/<id>.md` | Live agent def per node. `main` is seed; children generated on split. | splitter. |
-| `wiki/**` | Partitioned knowledge + `*.contract.md` seams. | Owning node, on demand. |
-| `skills/<name>/SKILL.md` | Procedures. | Owning node, on demand. |
-| `tools/**` | Reusable scripts + `tools/manifest.md`. | Owning node, on demand. |
+| `wiki/<node>/**` | Partitioned knowledge; `*.contract.md` seams under the owning parent. | Owning node, on demand. |
+| `skills/<node>/**` | Procedures (`<name>/SKILL.md`). | Owning node, on demand. |
+| `tools/<node>/**` | Node-owned reusable scripts + `tools/<node>/manifest.md`. | Owning node, on demand. |
+| `.github/tools/**` | Kernel tooling: the owner-oracle and (later) the eval harness. | Humans/kernel. |
+
+### 2.7 The owner-oracle and glob semantics
+
+`owner(path)` is computed by a single deterministic tool — the **owner-oracle**
+(`.github/tools/owner_validator.py`) — so coverage is never a matter of judgement:
+
+- **Glob dialect (pinned): gitignore semantics** (via `pathspec`). `dir/**` matches everything under
+  `dir`; `**/Name` matches `Name` in any directory; a bare `**` matches everything. Matching is
+  **case-sensitive**; **dotfiles are matched** like any other path.
+- **Path domain:** the tracked set from `git ls-files` (files only), each normalized to
+  forward-slash and repo-root-relative — so the oracle behaves identically on Windows and POSIX.
+- **Effective domain** of a node = `domain` minus `excludes`.
+- **Verdict:** `ok`, or a list of `{ rule, path|node, evidence }` for `uncovered` (0 owners — i.e.
+  `UNOWNED`), `overlap` (> 1 owner), or `tree` (structural). Exit non-zero on any violation.
+
+Both consumers call this one oracle: the `splitter` (pre-commit, over the proposed tree) and the
+**integration gate** (over each change's diff, including untracked files). One function, one source of
+truth. Kernel tooling lives under `.github/tools/` (governance-owned), separate from node-owned
+`tools/<node>/` bundles.
 
 ---
 
@@ -163,12 +205,18 @@ a liability — avoid creating it, and remove it if it becomes dead weight.
   (SO4).
 - **Freshness (SO5).** An artifact declares the source paths it depends on (`sources`). When those
   sources change, the owning node must re-touch the artifact in the same task. A dangling reference
-  (to a path/symbol that no longer exists) is a violation. Freshness is what turns the wiki from a
-  stale liability into a trusted cache.
+  (to a path/symbol that no longer exists) is a violation. The sources-changed ⇒ re-touch check is a
+  deterministic **heuristic** — necessary, not sufficient: it proves the artifact was updated, not
+  that the update is semantically complete. Freshness is what turns the wiki from a stale liability
+  into a trusted cache.
 
 ### 3.5 Formats
 
-Wiki page front-matter:
+Every artifact carries `owner` (single-writer, SO3) and `sources` (freshness, SO5) front-matter, and
+lives under its owner's namespace so single-writer is a path-prefix fact and orphans are detectable
+from the filesystem (SO6).
+
+Wiki page — `wiki/<owner>/<page>.md`:
 
 ```yaml
 ---
@@ -179,45 +227,48 @@ updated: 2026-08-03
 ---
 ```
 
-Skill — `skills/<name>/SKILL.md` (Copilot CLI skill convention):
+Skill — `skills/<owner>/<name>/SKILL.md` (Copilot CLI skill convention):
 
 ```yaml
 ---
 name: add-api-endpoint
 description: Use when adding a controller endpoint to the .NET API.
 owner: backend
+sources: [src/Api/**]                # freshness: change here ⇒ revisit this skill
 ---
-# steps: numbered, deterministic where possible; call tools by name (e.g. `tools/new-migration.ps1`).
+# steps: numbered, deterministic where possible; call tools by name (e.g. `tools/backend/new-migration.ps1`).
 ```
 
-Tool — a script plus a one-line row in `tools/manifest.md`:
+Tool — a script under `tools/<owner>/` plus a row in that node's `tools/<owner>/manifest.md`:
 
 ```
-| tool | owner | purpose | usage |
-| ---- | ----- | ------- | ----- |
-| new-migration.ps1 | backend | scaffold + apply an EF migration | pwsh tools/new-migration.ps1 -Name X |
+| tool | owner | sources | purpose | usage |
+| ---- | ----- | ------- | ------- | ----- |
+| new-migration.ps1 | backend | src/Api/** | scaffold + apply an EF migration | pwsh tools/backend/new-migration.ps1 -Name X |
 ```
 
 ### 3.6 Bootstrapping a node on split
 
 When `splitter` splits node `N` into children `C1…Ck` (with `N` retaining seams):
 
-1. **Repartition the bundle.** Move each wiki/skill/tool to the child that now owns its
-   `documents`/`sources`. Anything spanning a seam stays with `N` (becomes/remains a `*.contract.md`).
-   Re-stamp every `owner`. Single-writer must still hold.
+1. **Repartition the bundle.** Move each wiki/skill/tool into the namespace of the child that now
+   owns its `documents`/`sources` (`wiki/<child>/…`, etc.). Anything spanning a seam stays with `N`
+   (becomes/remains a `*.contract.md` under `N`'s namespace). Re-stamp every `owner`. Single-writer
+   must still hold.
 2. **Generate each child's agent-def** from `.github/agents/_node.template.md`, filled with the
    child's charter and an index of its inherited bundle.
-3. **Validate coverage** (§2.2) before the commit, as part of the atomic split transaction. A split
-   that fails coverage is rejected, not committed.
+3. **Validate coverage** with the owner-oracle (§2.7) before the commit, as part of the atomic split
+   transaction. A split that fails coverage is rejected, not committed.
 
 ### 3.7 Self-ownership invariants
 
-- **SO1 Coverage** — every tracked path → exactly one leaf domain.
+- **SO1 Coverage** — every tracked path → exactly one node (a leaf, or a parent for its shared set).
 - **SO2 Bundle presence** — every live node has an agent-def.
 - **SO3 Single-writer** — each wiki/skill/tool owned by exactly one live node.
 - **SO4 Seam ownership** — every cross-child contract owned by the common parent.
 - **SO5 Freshness** — no dangling refs; sources-changed ⇒ artifact re-touched.
-- **SO6 No orphan** — every artifact is reachable from an index and owned by a *live* node.
+- **SO6 No orphan** — every artifact sits under a live node's namespace and is reachable from the
+  derived index (filesystem namespace + link-graph); none owned by a dead node.
 - **SO7 Demand-driven** — no artifact created speculatively; each has a real, recurring use.
 
 The `splitter` enforces SO1–SO4 on every split; nodes uphold SO3–SO7 by discipline as they work.
@@ -242,7 +293,8 @@ overloaded, a `SplitProposal`.
 
 - **Hardcoded entry** — every request starts by invoking `main`.
 - **Host disposes, nodes propose** — only the Host mutates `org.json`; nodes only return proposals.
-- **Coverage** — `⋃ children.domain ∪ parent.retained == parent.domain`; every path → one leaf.
+- **Coverage** — every tracked path → exactly one node's effective domain (`domain` − `excludes`); a
+  Parent owns only its explicit shared set, never `**`.
 - **Single-writer** — every wiki page / skill / tool owned by exactly one live node.
 - **Seam ownership** — cross-child contracts owned by the common parent.
 - **Worktree isolation** — concurrent nodes each work in their own `.worktrees/<id>/`.
@@ -256,7 +308,7 @@ overloaded, a `SplitProposal`.
 
 | Earlier pain point | Fix |
 | ------------------ | --- |
-| Splitter produced disjoint include/exclude charters | `org.schema.json` + coverage rules the splitter enforces on every split (§2.2, §3.6) |
+| Splitter produced disjoint include/exclude charters | `org.schema.json` + the owner-oracle (§2.7) run by the splitter pre-commit and at every gate (§2.2, §3.6) |
 | Wiki skipped, or bloated | Demand-driven payback rule + freshness & single-writer discipline (§3.3, §3.4) |
 | Tools not maintained | Tool manifest + payback rule (§3.2, §3.5) |
 | Concurrent agents collided | Worktree-isolation invariant (§2.5) |

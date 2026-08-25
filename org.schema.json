@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/aloknigam/agentOrg/org.schema.json",
   "title": "Agent Org",
-  "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage rules (coverage, no-overlap, no-disjoint-excludes, parent/child back-references, acyclicity, seam ownership) are enforced by the splitter on every split; see .github/org-design.md §2.2.",
+  "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage (exactly-one-owner via effective domain, overlap/uncovered, tree back-references and shape) is computed by the owner-oracle at .github/tools/owner_validator.py; see .github/org-design.md §2.2 and §2.7.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "root", "nodes"],
@@ -58,7 +58,7 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string" },
-          "description": "Glob patterns this node owns."
+          "description": "Glob patterns (gitignore semantics) the node owns. For a Parent this is an explicit shared set (root/org/contract files common to its children), never '**'. Effective domain = domain minus excludes."
         },
         "concerns": {
           "type": "array",
@@ -68,7 +68,7 @@
         "excludes": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Globs inside domain that are owned elsewhere (a child, or a sibling via the common parent). Every exclude MUST be covered by another node's domain (enforced by the splitter on split; see org-design.md §2.2)."
+          "description": "Globs a node's domain would match but that are owned elsewhere (a cross-cutting sibling). Effective domain = domain minus excludes. A materialized excluded path that no other node covers surfaces as UNOWNED via the owner-oracle; see org-design.md §2.2, §2.7."
         }
       }
     }
