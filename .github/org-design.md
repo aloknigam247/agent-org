@@ -79,18 +79,16 @@ resolved by assigning it to an existing child, proposing a gated new child (a ne
 if it is genuinely shared — the parent. The integration gate (§2.7) runs the oracle on **every**
 change, so drift is caught when a file appears, not only at split time.
 
-Canonical example (the Spec Review Platform):
+An illustration (abstract):
 
-- `backend` — domain `src/Api/**`, `tests/**`; excludes `**/Dockerfile`.
-- `frontend` — domain `src/web/**`; excludes `**/Dockerfile`.
-- `infra` — domain `infra/**`, `**/Dockerfile`, `azure.yaml`, `docker-compose*.yml`.
-- `main` (Parent) — shared set `README.md`, `org.json`, `.github/**`, `wiki/**/*.contract.md`,
-  root config.
+- `main` (Parent) — shared set `README.md`, `org.json`, `.github/**`, `wiki/**/*.contract.md`.
+- `a` — domain `src/a/**`; excludes `**/*.lock`.
+- `b` — domain `src/b/**`.
+- `c` — domain `build/**`, `**/*.lock` (a cross-cutting aspect).
 
-`src/Api/Dockerfile` → `backend`'s domain matches but excludes it → **`infra`** owns it (a
-cross-cutting aspect resolved by one exclude). `src/Api/Program.cs` → **`backend`** only. `README.md`
-→ **`main`**'s shared set only. A new `src/shared/types.ts` matching no node → **`UNOWNED`** →
-resolved to a child or a gated new child.
+`src/a/deps.lock` → `a`'s domain matches but excludes it → **`c`** owns it (a cross-cutting aspect
+resolved by one exclude). `src/a/x` → **`a`** only. `README.md` → **`main`**'s shared set only. A new
+`src/shared/y` matching no node → **`UNOWNED`** → resolved to a child or a gated new child.
 
 ### 2.3 Growth — gated, one-way splits
 
@@ -110,8 +108,8 @@ Executed by the `splitter` as one atomic git commit; `org.json` `version` bumps 
 
 ### 2.4 Seams / contracts
 
-When a domain splits into parts that must agree on an interface (e.g. `backend` ↔ `frontend` over a
-REST/OpenAPI + SignalR contract), that interface is a **seam**. Seams are owned by the **common
+When a domain splits into parts that must agree on an interface (e.g. a provider and a consumer
+sharing an API/schema contract), that interface is a **seam**. Seams are owned by the **common
 parent**, never by a child, and are documented as `wiki/**/<name>.contract.md`. A change on one side
 of a seam is not "done" until the seam doc and the other side agree — a rule the seam-owning parent
 upholds.
@@ -221,9 +219,9 @@ Wiki page — `wiki/<owner>/<page>.md`:
 
 ```yaml
 ---
-owner: backend                       # exactly one live node id
-documents: [src/Api/**]              # what this page is about
-sources: [src/Api/Approvals/**]      # change here ⇒ re-touch this page (freshness)
+owner: a  # exactly one live node id
+documents: [src/a/**]  # what this page is about
+sources: [src/a/core/**]  # change here ⇒ re-touch this page (freshness)
 updated: 2026-08-03
 ---
 ```
@@ -232,12 +230,12 @@ Skill — `skills/<owner>/<name>/SKILL.md` (Copilot CLI skill convention):
 
 ```yaml
 ---
-name: add-api-endpoint
-description: Use when adding a controller endpoint to the .NET API.
-owner: backend
-sources: [src/Api/**]                # freshness: change here ⇒ revisit this skill
+name: add-widget
+description: Use when adding a widget to module a.
+owner: a
+sources: [src/a/**]  # freshness: change here ⇒ revisit this skill
 ---
-# steps: numbered, deterministic where possible; call tools by name (e.g. `tools/backend/new-migration.ps1`).
+# steps: numbered, deterministic where possible; call tools by name (e.g. `tools/a/scaffold.ps1`).
 ```
 
 Tool — a script under `tools/<owner>/` plus a row in that node's `tools/<owner>/manifest.md`:
@@ -245,7 +243,7 @@ Tool — a script under `tools/<owner>/` plus a row in that node's `tools/<owner
 ```
 | tool | owner | sources | purpose | usage |
 | ---- | ----- | ------- | ------- | ----- |
-| new-migration.ps1 | backend | src/Api/** | scaffold + apply an EF migration | pwsh tools/backend/new-migration.ps1 -Name X |
+| scaffold.ps1 | a | src/a/** | scaffold a new module under a | pwsh tools/a/scaffold.ps1 -Name X |
 ```
 
 ### 3.6 Bootstrapping a node on split
