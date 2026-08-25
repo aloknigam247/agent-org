@@ -193,7 +193,8 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
             result = invoke(manifest, sandbox, env, model, effort, manifest.get("timeout", 300))
             result.update(capture(sandbox))
             org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
-            result["grade"] = graders.grade(manifest, org, result["changed_paths"], sandbox, result["response"])
+            result["grade"] = graders.grade(manifest, org, result["changed_paths"], sandbox,
+                                             result["response"], result["exit"], result["timed_out"])
             mark_runaway(result, manifest)
             add_calibration(result, org, sandbox, manifest.get("agent", "main"))
             if keep:

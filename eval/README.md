@@ -35,7 +35,7 @@ expected_owner: [main]         # human-labeled owning node(s) — routing ground
 allowed_paths: ["**"]          # regions the change may touch
 forbidden_paths: []            # regions it must not touch
 required_behavior: []          # human-readable outcome checks (E2+; judge only where a command can't decide)
-build_cmd: null                # optional build/test command; null = skip
+build_cmd: null                # optional outcome assertion (exit 0 = pass); verifies required_behavior
 timeout: 240                   # seconds (case wall clock; exceeding it flags a runaway)
 max_cost: null                 # optional USD cap; premium-request cost above it flags a runaway
 max_model_calls: null          # optional cap on model calls; above it flags a runaway

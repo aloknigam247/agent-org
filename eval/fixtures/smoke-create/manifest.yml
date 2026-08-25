@@ -7,7 +7,7 @@ allowed_paths: ["**"]
 forbidden_paths: []
 required_behavior:
   - "greeting.txt exists and contains 'hello'"
-build_cmd: null
+build_cmd: 'python -c "import pathlib; assert pathlib.Path(''greeting.txt'').read_text().strip() == ''hello''"'
 timeout: 240
 max_cost: null
 max_model_calls: null

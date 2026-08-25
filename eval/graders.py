@@ -24,9 +24,14 @@ def _match_any(globs, path):
     return bool(globs) and ov._match(ov._spec(globs), ov.normalize(path))
 
 
-def grade(manifest, org, changed_paths, sandbox, response=""):
+def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed_out=False):
     checks = []
     compiled = ov.compile_nodes(org.get("nodes", []))
+
+    # invocation health — a crashed or timed-out run never passes, however green the rest looks vacuously
+    live = exit_code == 0 and not timed_out
+    checks.append({"check": "invocation", "result": "pass" if live else "fail",
+                   "evidence": f"exit={exit_code} timed_out={timed_out}"})
 
     # routing — the node that owns each changed path vs the manifest's human label
     expected = set(manifest.get("expected_owner") or [])
@@ -77,4 +82,5 @@ def grade(manifest, org, changed_paths, sandbox, response=""):
 if __name__ == "__main__":
     payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     print(json.dumps(grade(payload["manifest"], payload["org"], payload["changed_paths"],
-                           payload["sandbox"], payload.get("response", "")), indent=2))
+                           payload["sandbox"], payload.get("response", ""),
+                           payload.get("exit", 0), payload.get("timed_out", False)), indent=2))
