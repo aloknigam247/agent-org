@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aloknigam/agentOrg/org.schema.json",
+  "title": "Agent Org",
+  "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage rules (coverage, no-overlap, no-disjoint-excludes, parent/child back-references, acyclicity, seam ownership) are enforced by the splitter on every split; see .github/org-design.md §2.2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "root", "nodes"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 3,
+      "description": "Org-state version. Bumped by exactly one on every committed split."
+    },
+    "root": {
+      "type": "string",
+      "description": "id of the root node. The Host hardcodes the entry point to this node."
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/node" }
+    }
+  },
+  "definitions": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "parent", "children", "mode", "charter"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Stable, hierarchy-free identifier. Never renamed across reorgs."
+        },
+        "parent": {
+          "type": ["string", "null"],
+          "description": "id of the parent node, or null for the root."
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "ids of direct children. Empty for a Leaf."
+        },
+        "mode": {
+          "enum": ["Parent", "Leaf"],
+          "description": "Parent = scatter-gather over children. Leaf = executes directly."
+        },
+        "charter": { "$ref": "#/definitions/charter" }
+      }
+    },
+    "charter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "concerns", "excludes"],
+      "properties": {
+        "domain": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Glob patterns this node owns."
+        },
+        "concerns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Human-readable responsibilities inside the domain."
+        },
+        "excludes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Globs inside domain that are owned elsewhere (a child, or a sibling via the common parent). Every exclude MUST be covered by another node's domain (enforced by the splitter on split; see org-design.md §2.2)."
+        }
+      }
+    }
+  }
+}

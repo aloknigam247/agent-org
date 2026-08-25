@@ -1,0 +1,6 @@
+# Runtime execution worktrees (agentOrg concurrency isolation)
+.worktrees/
+
+# Python
+__pycache__/
+*.pyc

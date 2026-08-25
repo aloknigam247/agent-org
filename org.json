@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "root": "main",
+  "nodes": [
+    {
+      "id": "main",
+      "parent": null,
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": ["**/*"],
+        "concerns": [
+          "owns the entire repository until the first split",
+          "does all work directly; proposes a gated split when overloaded"
+        ],
+        "excludes": []
+      }
+    }
+  ]
+}
