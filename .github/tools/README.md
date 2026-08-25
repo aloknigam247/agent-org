@@ -19,6 +19,10 @@ python .github/tools/owner_validator.py --org org.json --paths src/foo.py src/ba
 
 # who owns a path?
 python .github/tools/owner_validator.py --org org.json --owner src/foo.py
+
+# integration gate: are this node's changes inside its domain? (diff = git changes, or pass --paths)
+python .github/tools/owner_validator.py --org org.json --acting <node-id>
 ```
 
-Exit code is `0` when `status: ok`, non-zero on any violation.
+Exit code is `0` when `status: ok`, non-zero on any violation. Containment reports a `containment`
+violation for any changed path owned by another node, or `uncovered` for an UNOWNED path.

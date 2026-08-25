@@ -117,10 +117,23 @@ upholds.
 
 ### 2.5 Concurrency — worktree isolation
 
-Multiple nodes may execute in parallel. Even with disjoint domains they can collide on the working
-tree, the index, or build outputs. **Invariant:** each concurrently-executing node works in its own
-git worktree under `.worktrees/<node-id>/`, and results are integrated on the main tree only after
-the node completes its work. This is a hard fix for the "concurrent agents collided" failure.
+Multiple nodes may execute in parallel; even with disjoint domains they can collide on the working
+tree, the index, or build outputs. Each run is isolated in its own git worktree and reaches `main`
+only through a single serialized step:
+
+1. **Create** — `git worktree add .worktrees/<node-id>/<run-id>` on a branch off `main` (the `run-id`
+   keeps concurrent runs of the same node apart).
+2. **Execute** — the node does all its work there, and nowhere else.
+3. **Validate** — run the gates in the worktree: the owner-oracle **containment** check over the diff
+   (`--acting <node-id>`, §2.7) plus the task's build/tests.
+4. **Integrate & clean up** — one role fast-forwards/merges the worktree branch into `main`, **one at
+   a time**, then removes the worktree.
+
+**Invariant:** a node's *execution* writes only inside its worktree; `main` changes only through the
+serialized *integration* step, which is the single writer to `main`. Because coverage gives concurrent
+nodes disjoint domains (hence disjoint files), serialized integration is near-conflict-free; the rare
+seam/exclude overlap is caught by the containment check. This is the hard fix for the "concurrent
+agents collided" failure.
 
 ### 2.6 Where things live
 
@@ -302,7 +315,8 @@ overloaded, a `SplitProposal`.
   Parent owns only its explicit shared set, never `**`.
 - **Single-writer** — every wiki page / skill / tool owned by exactly one live node.
 - **Seam ownership** — cross-child contracts owned by the common parent.
-- **Worktree isolation** — concurrent nodes each work in their own `.worktrees/<id>/`.
+- **Worktree isolation** — a node's execution writes only in its own `.worktrees/<id>/<run-id>`;
+  `main` changes only via the serialized integration step (the single writer to `main`).
 - **Deferred, gated, one-way growth** — splits happen after a task, need human approval, never merge
   back.
 - **Demand-driven bundle** — no wiki/skill/tool created speculatively; none left stale or orphaned.

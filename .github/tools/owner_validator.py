@@ -152,6 +152,21 @@ def validate(org, paths):
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 
+def check_containment(org, acting, paths):
+    """Integration gate (s1b): assert every changed path is owned by the acting node."""
+    violations = []
+    compiled = compile_nodes(org.get("nodes", []))
+    for path in paths:
+        hits = owners_of(compiled, path)
+        if len(hits) == 0:
+            violations.append({"rule": "uncovered", "path": normalize(path), "evidence": "UNOWNED: matches no node's effective domain"})
+        elif len(hits) > 1:
+            violations.append({"rule": "overlap", "path": normalize(path), "evidence": f"owned by {hits}"})
+        elif hits[0] != acting:
+            violations.append({"rule": "containment", "path": normalize(path), "acting": acting, "owner": hits[0], "evidence": f"changed a path owned by {hits[0]}, not acting node {acting}"})
+    return {"status": "ok" if not violations else "violations", "violations": violations}
+
+
 def git_tracked(root):
     """Tracked plus untracked-non-ignored files (forward-slash), so a just-created unowned file is
     caught rather than silently missed (design §2.7)."""
@@ -164,12 +179,21 @@ def git_tracked(root):
     return [normalize(line) for line in out.stdout.splitlines() if line.strip()]
 
 
+def git_changed(root):
+    """Paths changed vs HEAD plus untracked-non-ignored, for the integration gate."""
+    changed = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "HEAD"], capture_output=True, text=True, check=True)
+    untracked = subprocess.run(["git", "-C", str(root), "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True, check=True)
+    lines = changed.stdout.splitlines() + untracked.stdout.splitlines()
+    return [normalize(line) for line in lines if line.strip()]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="agentOrg owner-oracle / coverage validator")
     parser.add_argument("--org", default="org.json", help="path to org.json")
     parser.add_argument("--root", default=".", help="repo root for git ls-files")
     parser.add_argument("--paths", nargs="*", help="explicit paths to check instead of git ls-files")
     parser.add_argument("--owner", help="print the owner of a single path and exit")
+    parser.add_argument("--acting", help="integration-gate containment: assert changed paths are owned by this node id")
     args = parser.parse_args(argv)
 
     org = json.loads(Path(args.org).read_text(encoding="utf-8"))
@@ -179,6 +203,16 @@ def main(argv=None):
         owner = hits[0] if len(hits) == 1 else None
         print(json.dumps({"path": normalize(args.owner), "owner": owner, "matches": hits}))
         return 0 if owner else 1
+
+    if args.acting:
+        node_ids = {n["id"] for n in org["nodes"]}
+        if args.acting not in node_ids:
+            print(json.dumps({"status": "error", "message": f"unknown acting node {args.acting!r}"}))
+            return 2
+        paths = [normalize(p) for p in args.paths] if args.paths else git_changed(args.root)
+        result = check_containment(org, args.acting, paths)
+        print(json.dumps(result, indent=2))
+        return 0 if result["status"] == "ok" else 1
 
     paths = [normalize(p) for p in args.paths] if args.paths else git_tracked(args.root)
     result = validate(org, paths)

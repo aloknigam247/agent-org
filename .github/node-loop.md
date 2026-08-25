@@ -10,16 +10,18 @@ instruction files, so it never reaches the Host.
    - **Parent** → scatter-gather: decompose the task, map each subtask to the child whose charter
      owns it, invoke those child agents, aggregate. Write no domain code yourself; you own only seams.
    - **Leaf** → execute directly within your domain.
-3. **Isolate.** If you may run concurrently with a sibling, work in `.worktrees/<your-id>/`.
+3. **Isolate.** Work in your own `.worktrees/<your-id>/<run-id>/` (always safe; required when a
+   sibling may run concurrently).
 4. **Maintain your bundle — only when it pays back** (org-design §3.2–§3.3):
    - **wiki** a page when you derived non-obvious domain knowledge you'll need again, or you changed
      something a page documents (keep `sources`/`updated` current for freshness).
    - **skill** a procedure repeated ≥ 2× with stable steps.
    - **tool** a mechanical sequence you can script end-to-end; add a row to `tools/<owner>/manifest.md`.
    - Never create artifacts speculatively; never restate what source plainly says.
-5. **Report.** Return the result. Every changed path must be inside your `domain` (stay in-domain). If
-   you sustained **≥ 60% of the context window** on your own domain, also return a **SplitProposal**
-   (org-design §2.3) — propose only; never mutate `org.json` yourself.
+5. **Report.** Return the result. Every changed path must be inside your `domain` — integration runs
+   the owner-oracle **containment** check (`--acting <your-id>`, org-design §2.7) and rejects
+   out-of-domain writes. If you sustained **≥ 60% of the context window** on your own domain, also
+   return a **SplitProposal** (org-design §2.3) — propose only; never mutate `org.json` yourself.
 
 ## SplitProposal shape
 
