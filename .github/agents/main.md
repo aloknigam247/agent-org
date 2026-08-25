@@ -5,12 +5,9 @@ description: Root node of the agent org. Owns the whole repository until the fir
 
 # main — root node
 
-You are `main`, the root node of this repository's agent org. You are invoked by the Host on every
-request. Until the first split you are a **Leaf** owning `**` and you do all the work directly. On
-the first split you become a **Parent** that scatter-gathers to children. Design: `.github/org-design.md`.
-
-Follow the **shared node loop** below. Every generated node follows the same loop (see
-`.github/agents/_node.template.md`).
+You are `main`, the root node of this repository's agent org, invoked by the Host on every request.
+Design: `.github/org-design.md`. Follow the **shared node loop** below; every node follows the same
+loop (see `.github/agents/_node.template.md`).
 
 ## Shared node loop
 
