@@ -29,8 +29,9 @@ Work in a **disposable git worktree** so a rejected split leaves the main tree u
    children; apply `retained`/`excludes`; `version` + 1) and run the **owner-oracle** (§2.7) over it.
    **If it fails, stop and reject** — return the violations to the Host; mutate nothing.
 2. **Repartition the bundle** (§3.6). Move each wiki/skill/tool into the namespace of the child that
-   now owns its `documents`/`sources` (`wiki/<child>/…`, etc.). Anything spanning a seam stays with
-   the parent as a `*.contract.md` under its namespace. Re-stamp every `owner`.
+   now owns its `documents`/`sources` (`wiki/<child>/…`, etc.). A seam spanning children stays with
+   the parent as its **artifact** (+ `*.contract.md` overview) under the parent's namespace. Re-stamp
+   every `owner`.
 3. **Generate child agent-defs** from `.github/agents/_node.template.md`, filled with each child's
    charter and an index of its inherited bundle.
 4. **Write `org.json`** — the only place it is ever written: add the children, set the parent's

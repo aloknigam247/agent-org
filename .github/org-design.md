@@ -113,11 +113,25 @@ Executed by the `splitter` as one atomic git commit; `org.json` `version` bumps 
 
 ### 2.4 Seams / contracts
 
-When a domain splits into parts that must agree on an interface (e.g. a provider and a consumer
-sharing an API/schema contract), that interface is a **seam**. Seams are owned by the **common
-parent**, never by a child, and are documented as `wiki/**/<name>.contract.md`. A change on one side
-of a seam is not "done" until the seam doc and the other side agree — a rule the seam-owning parent
-upholds.
+When a domain splits into parts that must agree on an interface — a provider and a consumer sharing
+an API/schema, shared types, a message format — that interface is a **seam**, owned by the **common
+parent**, never by a child.
+
+A seam is a machine-readable **artifact** (OpenAPI / JSON-schema / proto / shared types), not prose:
+the artifact is the **source of truth**, and a `*.contract.md` beside it is only a human overview.
+Both sides are checked **against the artifact** so drift surfaces mechanically — in a typed stack the
+consumer generates its client from the provider's schema, so a breaking change fails the consumer's
+build/type-check (the compiler is the contract test); add an explicit contract test only where the
+stack is untyped.
+
+A seam change is a **parent-orchestrated atomic transaction** — no child changes the interface
+unilaterally:
+
+1. the parent (seam owner) updates the **artifact**;
+2. it delegates the conforming change to **each** affected child;
+3. every side's checks must pass;
+4. the children **integrate together** (their worktrees bundled under the parent, §2.5), or the whole
+   seam change **rolls back** — the parent coordinates the rollback.
 
 ### 2.5 Concurrency — worktree isolation
 
@@ -273,8 +287,9 @@ untouched:
 1. **Pre-validate** the proposed tree with the owner-oracle (§2.7); bad charters are rejected before
    any files move.
 2. **Repartition the bundle.** Move each wiki/skill/tool into the namespace of the child that now
-   owns its `documents`/`sources` (`wiki/<child>/…`, etc.). Anything spanning a seam stays with `N`
-   as a `*.contract.md` under `N`'s namespace. Re-stamp every `owner`; single-writer must still hold.
+   owns its `documents`/`sources` (`wiki/<child>/…`, etc.). A seam spanning children stays with `N`
+   as its **artifact** (+ `*.contract.md` overview) under `N`'s namespace. Re-stamp every `owner`;
+   single-writer must still hold.
 3. **Generate each child's agent-def** from `.github/agents/_node.template.md`.
 4. **Write `org.json`** (splitter only) and **re-validate** the result with the oracle; if it fails,
    discard the worktree and commit nothing.
@@ -285,7 +300,8 @@ untouched:
 - **SO1 Coverage** — every tracked path → exactly one node (a leaf, or a parent for its shared set).
 - **SO2 Bundle presence** — every live node has an agent-def.
 - **SO3 Single-writer** — each wiki/skill/tool owned by exactly one live node.
-- **SO4 Seam ownership** — every cross-child contract owned by the common parent.
+- **SO4 Seam ownership** — every cross-child seam is an **artifact** owned by the common parent (the
+  source of truth); seam changes are parent-orchestrated and atomic (§2.4).
 - **SO5 Freshness** — no dangling refs; sources-changed ⇒ artifact re-touched.
 - **SO6 No orphan** — every artifact sits under a live node's namespace and is reachable from the
   derived index (filesystem namespace + link-graph); none owned by a dead node.
@@ -318,7 +334,8 @@ overloaded, a `SplitProposal`.
 - **Coverage** — every tracked path → exactly one node's effective domain (`domain` − `excludes`); a
   Parent owns only its explicit shared set, never `**`.
 - **Single-writer** — every wiki page / skill / tool owned by exactly one live node.
-- **Seam ownership** — cross-child contracts owned by the common parent.
+- **Seam ownership** — a cross-child seam is an artifact owned by the common parent; it is the source
+  of truth, and seam changes are atomic (all sides together, or roll back).
 - **Worktree isolation** — a node's execution writes only in its own `.worktrees/<id>/<run-id>`;
   `main` changes only via the serialized integration step (the single writer to `main`).
 - **Deferred, gated, one-way growth** — splits happen after a task, need human approval, never merge

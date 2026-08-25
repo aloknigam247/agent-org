@@ -40,7 +40,7 @@ children:                          # ≥ 2 new leaves
   - { id: <id>, charter: { domain: [...], concerns: [...], excludes: [...] } }
   - { id: <id>, charter: { domain: [...], concerns: [...], excludes: [...] } }
 retained: { domain: [...], excludes: [...] }   # your shared set as Parent (contracts/root/config)
-seams: [ "<name>.contract.md" ]                # contracts you keep; empty if children are independent
+seams: [ "<name>" ]                            # interface artifacts (+ .md overview) you keep; empty if independent
 ```
 
 Coupling decides the shape, not a different procedure: coupled children → keep their contract as a
