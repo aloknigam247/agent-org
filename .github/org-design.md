@@ -92,15 +92,16 @@ resolved by one exclude). `src/a/x` → **`a`** only. `README.md` → **`main`**
 
 ### 2.3 Growth — gated, one-way splits
 
-A node splits **only after** a task, out-of-band, when it is overloaded. Overload signal (fixed, from
-the prior research): **≥ 60% of the 200K context window** (~120K input tokens) sustained on its own
-domain. A node only **proposes**; it never mutates the org. Three kinds:
+A node splits **only after** a task, out-of-band, when it is overloaded. Overload signal (interim):
+**≥ 60% of the 200K context window** (~120K input tokens) on its own domain. A node only
+**proposes**; it never mutates the org.
 
-- **Vertical** — the node becomes a Parent that holds the map/contracts; ≥ 2 children own the detail.
-  Use when one domain has grown too deep.
-- **Horizontal** — partition one domain into sibling leaves. Use when a domain has independent parts.
-- **Grouping-node** — insert an intermediate Parent to reduce a parent's fan-out. Use when a Parent
-  has too many children to route well.
+Growth uses a single primitive today — **`add-children`**: the node becomes a `Parent` and gains ≥ 2
+new `Leaf` children carved from its domain, retaining a shared set. Whether the split reads as
+**vertical** (the parent keeps a seam its coupled children share) or **horizontal** (independent
+children, no seam) is a *property of the result decided by coupling*, not a separate procedure — one
+code path covers both. Inserting an intermediate Parent to cut fan-out (**`interpose`**) is deferred
+until fan-out is a real problem.
 
 Every split is **gated** (human approves/edits/rejects via the Host) and **one-way** (no merge-back).
 Executed by the `splitter` as one atomic git commit; `org.json` `version` bumps by one. Git history
@@ -248,16 +249,19 @@ Tool — a script under `tools/<owner>/` plus a row in that node's `tools/<owner
 
 ### 3.6 Bootstrapping a node on split
 
-When `splitter` splits node `N` into children `C1…Ck` (with `N` retaining seams):
+When `splitter` splits node `N` into children `C1…Ck` (with `N` retaining a shared set), it works in
+a disposable worktree and **validates before it mutates**, so a rejected split leaves the repo
+untouched:
 
-1. **Repartition the bundle.** Move each wiki/skill/tool into the namespace of the child that now
+1. **Pre-validate** the proposed tree with the owner-oracle (§2.7); bad charters are rejected before
+   any files move.
+2. **Repartition the bundle.** Move each wiki/skill/tool into the namespace of the child that now
    owns its `documents`/`sources` (`wiki/<child>/…`, etc.). Anything spanning a seam stays with `N`
-   (becomes/remains a `*.contract.md` under `N`'s namespace). Re-stamp every `owner`. Single-writer
-   must still hold.
-2. **Generate each child's agent-def** from `.github/agents/_node.template.md`, filled with the
-   child's charter and an index of its inherited bundle.
-3. **Validate coverage** with the owner-oracle (§2.7) before the commit, as part of the atomic split
-   transaction. A split that fails coverage is rejected, not committed.
+   as a `*.contract.md` under `N`'s namespace. Re-stamp every `owner`; single-writer must still hold.
+3. **Generate each child's agent-def** from `.github/agents/_node.template.md`.
+4. **Write `org.json`** (splitter only) and **re-validate** the result with the oracle; if it fails,
+   discard the worktree and commit nothing.
+5. **Commit atomically** — one commit for the `org.json` write, the moved bundle, and the new defs.
 
 ### 3.7 Self-ownership invariants
 

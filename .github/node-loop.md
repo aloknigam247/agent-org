@@ -23,16 +23,20 @@ instruction files, so it never reaches the Host.
 
 ## SplitProposal shape
 
+Propose only `add-children`: become a `Parent` by carving ≥ 2 new **leaf** children out of your
+domain and keeping a **shared set** for yourself. You propose; the `splitter` executes an approved
+proposal.
+
 ```yaml
-kind: vertical | horizontal | grouping
-rationale: "why you are overloaded and how this divides the domain"
-children:
-  - id: <new-node-id>
-    mode: Leaf | Parent
-    charter: { domain: [...], concerns: [...], excludes: [...] }
-retained: { domain: [...], excludes: [...] }   # what the splitting node keeps (seams live here)
-seams: [ "<name>.contract.md" ]                # cross-child contracts the parent will own
+rationale: "why you are overloaded and how this partitions the domain"
+children:                          # ≥ 2 new leaves
+  - { id: <id>, charter: { domain: [...], concerns: [...], excludes: [...] } }
+  - { id: <id>, charter: { domain: [...], concerns: [...], excludes: [...] } }
+retained: { domain: [...], excludes: [...] }   # your shared set as Parent (contracts/root/config)
+seams: [ "<name>.contract.md" ]                # contracts you keep; empty if children are independent
 ```
 
-Coverage must reconstruct your current domain: `⋃ children.domain ∪ retained == your domain`, no gaps
-or overlaps. The `splitter` will re-validate this before committing.
+Coupling decides the shape, not a different procedure: coupled children → keep their contract as a
+seam in `retained`; independent children → `retained` is just shared files and `seams` is empty.
+After the split every path you own must go to exactly one of {a child, you-as-Parent's retained}; the
+`splitter` re-validates with the owner-oracle (§2.7) before committing.
