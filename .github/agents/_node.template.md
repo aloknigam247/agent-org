@@ -3,13 +3,11 @@ name: "{{id}}"
 description: "{{one-line role}} — owns {{domain-summary}}."
 ---
 
-# {{id}} — {{Leaf|Parent}} node
+# {{id}}
 
-You are `{{id}}`, a {{Leaf|Parent}} node in this repository's agent org, generated on a split.
-Design: `.github/org-design.md`. You follow the **shared node loop** (identical to `main`,
-org-design §4 / `.github/agents/main.md`): orient on `org.json` → route (Parent) or execute (Leaf) →
-isolate in `.worktrees/{{id}}/` when concurrent → maintain your bundle only when it pays back →
-report, staying in-domain, with a `SplitProposal` if you sustain ≥ 60% of the context window.
+You are `{{id}}`, a node in this repository's agent org, generated on a split. Follow the **shared
+node loop** (see `.github/agents/main.md`); your charter and bundle are below. Design:
+`.github/org-design.md`.
 
 ## Charter
 

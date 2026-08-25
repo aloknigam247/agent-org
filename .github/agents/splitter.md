@@ -21,10 +21,8 @@ decide *whether* to split; you make an approved split real, correctly and atomic
    parent) as a `*.contract.md`. Re-stamp every `owner`. Single-writer must still hold.
 2. **Generate child agent-defs** from `.github/agents/_node.template.md`, filled with each child's
    charter and an index of its inherited bundle.
-3. **Validate coverage — before writing anything to `org.json`.** Check the proposed tree against the
-   coverage rules (org-design §2.2) over the real tracked-path set: full coverage, no overlaps, no
-   disjoint excludes, `⋃ children.domain ∪ retained ==` the splitting node's domain, valid tree
-   shape. **If it fails, stop and reject** — return the violations to the Host; do not commit.
+3. **Validate coverage — before writing anything to `org.json`.** Run the owner-oracle (§2.7) over the
+   proposed tree. **If it fails, stop and reject** — return the violations to the Host; do not commit.
 4. **Rewrite `org.json`.** Add the child nodes; set the splitting node's `mode` to `Parent` and its
    `children`; set each child's `parent`; apply `retained`/`excludes`; **bump `version` by one.**
 5. **Commit atomically.** One commit contains the `org.json` rewrite, the moved/generated bundle
