@@ -131,6 +131,7 @@ the node completes its work. This is a hard fix for the "concurrent agents colli
 | `org.schema.json` | Structural schema. | Humans/kernel. |
 | `.github/org-design.md` | This design. | Humans/kernel. |
 | `.github/copilot-instructions.md` | Host manual. | Humans/kernel. |
+| `.github/node-loop.md` | Shared node operating loop; read on demand by nodes, not auto-loaded (never reaches the Host). | Humans/kernel. |
 | `.github/agents/<id>.md` | Live agent def per node. `main` is seed; children generated on split. | splitter. |
 | `wiki/<node>/**` | Partitioned knowledge; `*.contract.md` seams under the owning parent. | Owning node, on demand. |
 | `skills/<node>/**` | Procedures (`<name>/SKILL.md`). | Owning node, on demand. |
@@ -283,7 +284,8 @@ The `splitter` enforces SO1–SO4 on every split; nodes uphold SO3–SO7 by disc
 - **splitter** — executes an approved split: repartition bundles, generate child defs, validate
   coverage, commit atomically, bump `version`.
 
-Nodes (`main` and generated children) share one operating loop: work in an isolated worktree →
+Nodes (`main` and generated children) share one operating loop, defined in `.github/node-loop.md`
+(read on demand; not auto-loaded, so it never reaches the Host): work in an isolated worktree →
 maintain the bundle per the payback rule → stay inside their domain → return the result and, if
 overloaded, a `SplitProposal`.
 

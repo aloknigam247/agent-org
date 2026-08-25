@@ -5,8 +5,8 @@ description: "{{one-line role}} — owns {{domain-summary}}."
 
 # {{id}}
 
-You are `{{id}}`, a node in this repository's agent org, generated on a split. Follow the **shared
-node loop** (see `.github/agents/main.md`); your charter and bundle are below. Design:
+You are `{{id}}`, a node in this repository's agent org, generated on a split. Before acting, read and
+follow the shared node loop in `.github/node-loop.md`; your charter and bundle are below. Design:
 `.github/org-design.md`.
 
 ## Charter
