@@ -1,0 +1,12 @@
+id: smoke-create
+unit: node
+agent: main
+intent: "Create a file named greeting.txt whose entire contents are exactly the single word: hello"
+expected_owner: [main]
+allowed_paths: ["**"]
+forbidden_paths: []
+required_behavior:
+  - "greeting.txt exists and contains 'hello'"
+build_cmd: null
+timeout: 240
+threshold_override: null
