@@ -187,6 +187,22 @@ def git_changed(root):
     return [normalize(line) for line in lines if line.strip()]
 
 
+def domain_size(org, acting, root):
+    """Offline domain-size proxy for the split self-check (s10): bytes and est-tokens of the files
+    owned by ``acting``. est-tokens ~= bytes/4 (a rough proxy, not an exact count)."""
+    compiled = compile_nodes(org.get("nodes", []))
+    owned, total_bytes = [], 0
+    for path in git_tracked(root):
+        hits = owners_of(compiled, path)
+        if len(hits) == 1 and hits[0] == acting:
+            owned.append(path)
+            try:
+                total_bytes += (Path(root) / path).stat().st_size
+            except OSError:
+                pass
+    return {"node": acting, "files": len(owned), "bytes": total_bytes, "est_tokens": total_bytes // 4}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="agentOrg owner-oracle / coverage validator")
     parser.add_argument("--org", default="org.json", help="path to org.json")
@@ -194,6 +210,9 @@ def main(argv=None):
     parser.add_argument("--paths", nargs="*", help="explicit paths to check instead of git ls-files")
     parser.add_argument("--owner", help="print the owner of a single path and exit")
     parser.add_argument("--acting", help="integration-gate containment: assert changed paths are owned by this node id")
+    parser.add_argument("--size", help="split self-check: report the domain-size proxy for this node id")
+    parser.add_argument("--window", type=int, default=200000, help="context window in tokens (default 200000)")
+    parser.add_argument("--threshold", type=float, default=0.60, help="split fraction of the window (default 0.60)")
     args = parser.parse_args(argv)
 
     org = json.loads(Path(args.org).read_text(encoding="utf-8"))
@@ -213,6 +232,17 @@ def main(argv=None):
         result = check_containment(org, args.acting, paths)
         print(json.dumps(result, indent=2))
         return 0 if result["status"] == "ok" else 1
+
+    if args.size:
+        node_ids = {n["id"] for n in org["nodes"]}
+        if args.size not in node_ids:
+            print(json.dumps({"status": "error", "message": f"unknown node {args.size!r}"}))
+            return 2
+        m = domain_size(org, args.size, args.root)
+        fraction = m["est_tokens"] / args.window if args.window else 0
+        m.update({"window": args.window, "threshold": args.threshold, "fraction": round(fraction, 3), "over_threshold": fraction >= args.threshold})
+        print(json.dumps(m, indent=2))
+        return 0
 
     paths = [normalize(p) for p in args.paths] if args.paths else git_tracked(args.root)
     result = validate(org, paths)

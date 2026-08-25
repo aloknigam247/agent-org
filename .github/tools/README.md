@@ -22,6 +22,9 @@ python .github/tools/owner_validator.py --org org.json --owner src/foo.py
 
 # integration gate: are this node's changes inside its domain? (diff = git changes, or pass --paths)
 python .github/tools/owner_validator.py --org org.json --acting <node-id>
+
+# split self-check: how big is a node's domain vs the context window?
+python .github/tools/owner_validator.py --org org.json --size <node-id>
 ```
 
 Exit code is `0` when `status: ok`, non-zero on any violation. Containment reports a `containment`

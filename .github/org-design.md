@@ -92,9 +92,13 @@ resolved by one exclude). `src/a/x` → **`a`** only. `README.md` → **`main`**
 
 ### 2.3 Growth — gated, one-way splits
 
-A node splits **only after** a task, out-of-band, when it is overloaded. Overload signal (interim):
-**≥ 60% of the 200K context window** (~120K input tokens) on its own domain. A node only
-**proposes**; it never mutates the org.
+A node splits **only after** a task, out-of-band, when overloaded. Overload is an **offline
+domain-size proxy** measured at the end-of-task self-check — the size of the files the node owns
+(owner-oracle `--size`, §2.7), not live context — against an interim **≥ 60% of the 200K-token
+window**. *Work is the clock*: the repo changes only during runs and git replicates it, so any run on
+any clone computes the same number — no telemetry service, no scheduler. A node only **proposes**; it
+never mutates the org. The threshold is interim: a good wiki lets a node work from artifacts rather
+than raw source, so raw size over-estimates true load, and the eval harness recalibrates it.
 
 Growth uses a single primitive today — **`add-children`**: the node becomes a `Parent` and gains ≥ 2
 new `Leaf` children carved from its domain, retaining a shared set. Whether the split reads as

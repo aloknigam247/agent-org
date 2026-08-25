@@ -18,10 +18,15 @@ instruction files, so it never reaches the Host.
    - **skill** a procedure repeated ≥ 2× with stable steps.
    - **tool** a mechanical sequence you can script end-to-end; add a row to `tools/<owner>/manifest.md`.
    - Never create artifacts speculatively; never restate what source plainly says.
-5. **Report.** Return the result. Every changed path must be inside your `domain` — integration runs
-   the owner-oracle **containment** check (`--acting <your-id>`, org-design §2.7) and rejects
-   out-of-domain writes. If you sustained **≥ 60% of the context window** on your own domain, also
-   return a **SplitProposal** (org-design §2.3) — propose only; never mutate `org.json` yourself.
+5. **Report & self-check.** Return the result. Every changed path must be inside your `domain` —
+   integration runs the owner-oracle **containment** check (`--acting <your-id>`, org-design §2.7)
+   and rejects out-of-domain writes. Then run the **split self-check**: if your domain-size proxy
+   (`--size <your-id>`, org-design §2.3) is over the threshold (~60% of the window), return a
+   **SplitProposal** — propose only; never mutate `org.json` yourself.
+
+If your task needs a path outside your `domain` — one another node owns, or an **UNOWNED** path
+(matching no node) — do not write it: surface it for resolution (route to the owner, propose a gated
+new child for a genuinely new area, or leave a shared file to the parent).
 
 ## SplitProposal shape
 
