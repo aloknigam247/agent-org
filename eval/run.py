@@ -21,10 +21,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import sys
 import time
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import graders  # noqa: E402
 
 KERNEL = Path(__file__).resolve().parent.parent
 
@@ -101,7 +105,7 @@ def invoke(manifest, sandbox: Path, env, model, effort, timeout):
 
 
 def capture(sandbox: Path):
-    status = sh(["git", "status", "--porcelain"], cwd=sandbox).stdout
+    status = sh(["git", "status", "--porcelain", "--untracked-files=all"], cwd=sandbox).stdout
     changed = [line[3:] for line in status.splitlines() if line.strip()]
     commits = sh(["git", "rev-list", "--count", "HEAD"], cwd=sandbox).stdout.strip()
     new_commits = (int(commits) - 1) if commits.isdigit() else 0
@@ -119,6 +123,8 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
             build_sandbox(fixture, sandbox)
             result = invoke(manifest, sandbox, env, model, effort, manifest.get("timeout", 300))
             result.update(capture(sandbox))
+            org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
+            result["grade"] = graders.grade(manifest, org, result["changed_paths"], sandbox, result["response"])
             if keep:
                 result["sandbox"] = str(sandbox)
             runs.append(result)
