@@ -15,19 +15,10 @@ pip install -r .github/tools/requirements.txt      # one-time: installs pathspec
 python .github/tools/owner_validator.py --org org.json --root .
 
 # validate an explicit path set (e.g. a change's diff)
-python .github/tools/owner_validator.py --org org.json --paths src/Api/x.cs src/web/y.tsx
+python .github/tools/owner_validator.py --org org.json --paths src/foo.py src/bar.ts
 
 # who owns a path?
-python .github/tools/owner_validator.py --org org.json --owner src/Api/Program.cs
+python .github/tools/owner_validator.py --org org.json --owner src/foo.py
 ```
 
 Exit code is `0` when `status: ok`, non-zero on any violation.
-
-## Self-tests — `test_owner_validator.py`
-
-Pins the glob dialect (gitignore semantics), path-separator normalization, case sensitivity, dotfile
-handling, cross-cutting excludes, UNOWNED/overlap, and the structural tree checks.
-
-```pwsh
-python .github/tools/test_owner_validator.py      # exit 0 = all pass
-```
