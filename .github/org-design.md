@@ -36,7 +36,7 @@ The organizational mechanics. If you know the earlier attempt, skim to §2.2 and
 ### 2.1 Nodes and roles
 
 - **Host** — the Copilot CLI session itself. Domain-less. It hardcodes the entry point to `main`,
-  gates splits to the human, and is the **only** writer of `org.json`. It never writes feature code.
+  gates splits to the human, and invokes `splitter` to execute them. It never writes feature code.
 - **main** — the root node. Owns the whole repo (`**`) until the first split.
 - **splitter** — a meta-agent that executes an approved split as one validated, git-committed
   transaction.
@@ -127,7 +127,7 @@ the node completes its work. This is a hard fix for the "concurrent agents colli
 
 | Path | What | Written by |
 | ---- | ---- | ---------- |
-| `org.json` | Live org state (whole tree, charters inlined). | Host only, on split. |
+| `org.json` | Live org state (whole tree, charters inlined). | `splitter`, on split. |
 | `org.schema.json` | Structural schema. | Humans/kernel. |
 | `.github/org-design.md` | This design. | Humans/kernel. |
 | `.github/copilot-instructions.md` | Host manual. | Humans/kernel. |
@@ -277,8 +277,8 @@ The `splitter` enforces SO1–SO4 on every split; nodes uphold SO3–SO7 by disc
 
 ## 4. Meta-agents — responsibilities
 
-- **Host** (`.github/copilot-instructions.md`) — hardcoded `main` entry; gates splits to the human;
-  sole writer of `org.json`; commits.
+- **Host** (`.github/copilot-instructions.md`) — hardcoded `main` entry; gates splits to the human and
+  invokes `splitter`; never writes `org.json` directly.
 - **main** — root node; owns the repo until the first split; otherwise a normal node.
 - **splitter** — executes an approved split: repartition bundles, generate child defs, validate
   coverage, commit atomically, bump `version`.
@@ -292,7 +292,8 @@ overloaded, a `SplitProposal`.
 ## 5. Invariants (never violate)
 
 - **Hardcoded entry** — every request starts by invoking `main`.
-- **Host disposes, nodes propose** — only the Host mutates `org.json`; nodes only return proposals.
+- **Host disposes, nodes propose** — nodes never mutate `org.json`; they only return proposals, and
+  the `splitter` writes it on an approved split.
 - **Coverage** — every tracked path → exactly one node's effective domain (`domain` − `excludes`); a
   Parent owns only its explicit shared set, never `**`.
 - **Single-writer** — every wiki page / skill / tool owned by exactly one live node.
