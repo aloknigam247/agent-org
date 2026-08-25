@@ -9,4 +9,6 @@ required_behavior:
   - "greeting.txt exists and contains 'hello'"
 build_cmd: null
 timeout: 240
+max_cost: null
+max_model_calls: null
 threshold_override: null

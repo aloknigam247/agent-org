@@ -5,14 +5,15 @@ runs it in a disposable sandbox, and checks its **output** — response, actions
 state — against a **human-curated manifest** that is independent of `org.json` (so routing checks are
 not circular).
 
-Status: **E1** — the runner skeleton (build sandbox → invoke → capture → teardown). Grading arrives
-in E2.
+Status: **E1–E3** — build/invoke/capture/teardown (E1), deterministic grading (E2), and stochastic
+aggregation over N repeats: estimated pass@1, per-check rates, failure modes, cost, a runaway gate, and
+split-threshold calibration (E3).
 
 ## Layout
 
 ```
 eval/
-  run.py                 # runner (E1); reuses .github/tools/owner_validator as the grader backbone
+  run.py                 # runner; reuses .github/tools/owner_validator as the grader backbone
   requirements.txt       # pyyaml (the oracle needs pathspec, see .github/tools/requirements.txt)
   fixtures/<case>/
     manifest.yml         # the case definition (below)
@@ -35,7 +36,9 @@ allowed_paths: ["**"]          # regions the change may touch
 forbidden_paths: []            # regions it must not touch
 required_behavior: []          # human-readable outcome checks (E2+; judge only where a command can't decide)
 build_cmd: null                # optional build/test command; null = skip
-timeout: 240                   # seconds
+timeout: 240                   # seconds (case wall clock; exceeding it flags a runaway)
+max_cost: null                 # optional USD cap; premium-request cost above it flags a runaway
+max_model_calls: null          # optional cap on model calls; above it flags a runaway
 threshold_override: null       # optional split-threshold fraction (scale down so a small fixture trips a split)
 ```
 
@@ -52,3 +55,10 @@ python eval/run.py eval/fixtures/smoke-create --repeats 5 --keep
 
 Auth: the harness sets `COPILOT_GITHUB_TOKEN` from `gh auth token`, because a spawned `copilot`
 subprocess does not inherit an agent session's managed auth.
+
+## Repeats & summary
+
+`--repeats N` runs the case N times and adds a `summary`: `pass_rate` (estimated pass@1 — a runaway
+run never counts as a pass), `per_check_pass_rate`, `failure_modes` (a sample per failing check),
+`cost`, `duration_s`, `runaway_count`, and `calibration` pairs (static domain-size proxy vs. actual
+input tokens) for recalibrating the split threshold. Pin `--model`/`--effort` for reproducible numbers.

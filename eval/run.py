@@ -1,8 +1,10 @@
-"""agentOrg eval harness — E1 runner.
+"""agentOrg eval harness.
 
-Runs one fixture case against the kernel's agents, offline and headless, then captures what the agent
-did. Grading is deferred to E2; E1 only proves the loop: build a disposable sandbox from a fixture,
-invoke a Copilot agent with `copilot -p --agent`, capture the result, tear down.
+Runs one fixture case against the kernel's agents, offline and headless: build a disposable sandbox
+from a fixture, invoke a Copilot agent with `copilot -p --agent`, capture what it did (response,
+changed paths, commits, usage), grade it against the manifest, and tear down. Repeating a case N times
+turns a stochastic agent into an estimated pass@1 rate with per-check rates, failure modes, cost, a
+runaway count, and calibration pairs for the split threshold.
 
 A fixture is a directory `eval/fixtures/<case>/` with:
   - `manifest.yml` — the case definition (see eval/README.md).
@@ -29,6 +31,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
+import owner_validator as ov  # noqa: E402  (path added by graders import)
 
 KERNEL = Path(__file__).resolve().parent.parent
 
@@ -113,6 +116,72 @@ def capture(sandbox: Path):
     return {"changed_paths": changed, "new_commits": new_commits, "made_worktree": worktrees}
 
 
+def mark_runaway(result, manifest):
+    """Runaway gate (s10): flag non-termination, not inefficiency — timeout / cost / model-call caps."""
+    reasons = []
+    if result.get("timed_out"):
+        reasons.append("timeout")
+    usage = result.get("usage", {})
+    max_cost = manifest.get("max_cost")
+    cost = usage.get("totalPremiumRequestCost")
+    if max_cost is not None and cost is not None and cost > max_cost:
+        reasons.append(f"cost>{max_cost}")
+    max_calls = manifest.get("max_model_calls")
+    calls = usage.get("totalUserRequests")
+    if max_calls is not None and calls is not None and calls > max_calls:
+        reasons.append(f"calls>{max_calls}")
+    result["runaway"] = bool(reasons)
+    result["runaway_reasons"] = reasons
+
+
+def add_calibration(result, org, sandbox, acting):
+    """Record the pair (static domain-size proxy, actual task tokens) to recalibrate the 60% threshold."""
+    try:
+        result["domain_est_tokens"] = ov.domain_size(org, acting, sandbox)["est_tokens"]
+    except Exception:
+        result["domain_est_tokens"] = None
+    model_metrics = result.get("usage", {}).get("modelMetrics", {})
+    result["task_input_tokens"] = sum(v.get("usage", {}).get("inputTokens", 0) for v in model_metrics.values())
+    result["task_output_tokens"] = sum(v.get("usage", {}).get("outputTokens", 0) for v in model_metrics.values())
+
+
+def summarize(runs):
+    """Aggregate N repeats into an estimated pass@1 rate, per-check rates, failure modes, and cost."""
+    n = len(runs)
+    if not n:
+        return {}
+    accepted = sum(1 for r in runs if r["grade"]["passed"] and not r.get("runaway"))
+    names = sorted({c["check"] for r in runs for c in r["grade"]["checks"]})
+    per_check, fail_modes = {}, {}
+    for name in names:
+        fails, sample = 0, None
+        for r in runs:
+            for c in r["grade"]["checks"]:
+                if c["check"] == name and c["result"] == "fail":
+                    fails += 1
+                    sample = sample or c["evidence"]
+        per_check[name] = round((n - fails) / n, 3)
+        if fails:
+            fail_modes[name] = {"failed": fails, "sample": sample}
+    runaway = sum(1 for r in runs if r.get("runaway"))
+    if runaway:
+        fail_modes["runaway"] = {"failed": runaway,
+                                 "sample": next((r["runaway_reasons"] for r in runs if r.get("runaway")), None)}
+    costs = [r.get("usage", {}).get("totalPremiumRequestCost", 0) or 0 for r in runs]
+    durations = [r.get("duration_s", 0) for r in runs]
+    return {
+        "repeats": n,
+        "pass_rate": round(accepted / n, 3),  # estimated pass@1 (production gets one attempt)
+        "per_check_pass_rate": per_check,
+        "failure_modes": fail_modes,
+        "cost": {"mean": round(sum(costs) / n, 3), "max": max(costs)},
+        "duration_s": {"mean": round(sum(durations) / n, 1), "max": max(durations)},
+        "runaway_count": runaway,
+        "calibration": [{"domain_est_tokens": r.get("domain_est_tokens"),
+                         "task_input_tokens": r.get("task_input_tokens")} for r in runs],
+    }
+
+
 def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
     manifest = yaml.safe_load((fixture / "manifest.yml").read_text(encoding="utf-8"))
     env = copilot_env()
@@ -125,17 +194,20 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
             result.update(capture(sandbox))
             org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
             result["grade"] = graders.grade(manifest, org, result["changed_paths"], sandbox, result["response"])
+            mark_runaway(result, manifest)
+            add_calibration(result, org, sandbox, manifest.get("agent", "main"))
             if keep:
                 result["sandbox"] = str(sandbox)
             runs.append(result)
         finally:
             if not keep:
                 shutil.rmtree(sandbox, ignore_errors=True)
-    return {"case": manifest["id"], "unit": manifest.get("unit"), "agent": manifest.get("agent", "main"), "runs": runs}
+    return {"case": manifest["id"], "unit": manifest.get("unit"), "agent": manifest.get("agent", "main"),
+            "summary": summarize(runs), "runs": runs}
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="agentOrg eval harness (E1 runner)")
+    parser = argparse.ArgumentParser(description="agentOrg eval harness")
     parser.add_argument("fixture", help="path to a fixture directory")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--model", default=None)
