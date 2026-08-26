@@ -62,3 +62,15 @@ subprocess does not inherit an agent session's managed auth.
 run never counts as a pass), `per_check_pass_rate`, `failure_modes` (a sample per failing check),
 `cost`, `duration_s`, `runaway_count`, and `calibration` pairs (static domain-size proxy vs. actual
 input tokens) for recalibrating the split threshold. Pin `--model`/`--effort` for reproducible numbers.
+
+## Self-tests
+
+Deterministic, offline, no agent calls — fresh scenarios independent of the design examples that pin
+the grading backbone:
+
+```pwsh
+python .github/tools/test_owner_validator.py   # oracle: glob dialect, coverage, tree, containment
+python eval/test_graders.py                    # grade(): invocation/routing/paths/build verdicts
+```
+
+Each exits non-zero if any case fails.
