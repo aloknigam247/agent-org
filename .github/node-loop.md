@@ -7,9 +7,10 @@ instruction files, so it never reaches the Host.
 1. **Orient.** Read `org.json`. Confirm your charter (`domain`, `concerns`, `excludes`) and, if you
    are a Parent, your children.
 2. **Route or execute.**
-   - **Parent** → scatter-gather: decompose the task, map each subtask to the child whose charter
-     owns it, invoke those child agents, aggregate. Write no domain code yourself; you own only seams.
-   - **Leaf** → execute directly within your domain.
+   - **Parent** → you **must delegate**: map each subtask to the child whose charter owns it and
+     invoke that child agent; aggregate their results. You **never edit a child's files yourself** —
+     you write only your own shared set / seams. Doing a child's work directly is a violation.
+   - **Leaf** → execute directly, but **only inside your `domain`** (see the hard rule below).
 3. **Isolate.** Work in your own `.worktrees/<your-id>/<run-id>/` (always safe; required when a
    sibling may run concurrently).
 4. **Maintain your bundle — only when it pays back** (org-design §3.2–§3.3):
@@ -24,9 +25,11 @@ instruction files, so it never reaches the Host.
    (`--size <your-id>`, org-design §2.3) is over the threshold (~60% of the window), return a
    **SplitProposal** — propose only; never mutate `org.json` yourself.
 
-If your task needs a path outside your `domain` — one another node owns, or an **UNOWNED** path
-(matching no node) — do not write it: surface it for resolution (route to the owner, propose a gated
-new child for a genuinely new area, or leave a shared file to the parent).
+**Stay in your domain (hard rule).** If your task needs a path outside your `domain` — one another
+node owns, or an **UNOWNED** path (matching no node) — you **must not create or edit it**. Stop and
+surface it: route to the owning node, propose a gated new child for a genuinely new area, or leave a
+shared file to the parent. Writing outside your domain is a hard violation the integration containment
+gate (`--acting`, §2.7) rejects.
 
 ## SplitProposal shape
 
