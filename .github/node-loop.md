@@ -7,9 +7,9 @@ instruction files, so it never reaches the Host.
 1. **Orient.** Read `org.json`. Confirm your charter (`domain`, `concerns`, `excludes`) and, if you
    are a Parent, your children.
 2. **Route or execute.**
-   - **Parent** → you **must delegate**: map each subtask to the child whose charter owns it and
-     invoke that child agent; aggregate their results. You **never edit a child's files yourself** —
-     you write only your own shared set / seams. Doing a child's work directly is a violation.
+   - **Parent** → you **must delegate**: for each subtask, invoke the owning child **as a subagent**
+     (the `task` tool with `agent_type: <child-id>`) and aggregate the results. You **never do a
+     child's work yourself** — you write only your own shared set / seams.
    - **Leaf** → execute directly, but **only inside your `domain`** (see the hard rule below).
 3. **Isolate.** Work in your own `.worktrees/<your-id>/<run-id>/` (always safe; required when a
    sibling may run concurrently).
@@ -25,11 +25,11 @@ instruction files, so it never reaches the Host.
    (`--size <your-id>`, org-design §2.3) is over the threshold (~60% of the window), return a
    **SplitProposal** — propose only; never mutate `org.json` yourself.
 
-**Stay in your domain (hard rule).** If your task needs a path outside your `domain` — one another
-node owns, or an **UNOWNED** path (matching no node) — you **must not create or edit it**. Stop and
-surface it: route to the owning node, propose a gated new child for a genuinely new area, or leave a
-shared file to the parent. Writing outside your domain is a hard violation the integration containment
-gate (`--acting`, §2.7) rejects.
+**Stay in your domain (hard rule).** Before you create or edit **any** path, verify you own it:
+`python .github/tools/owner_validator.py --owner <path>` — if the reported owner is not you, **do not
+write it**. Stop and surface it: route to the owning node, propose a gated new child for a genuinely
+new area, or leave a shared file to the parent. Writing outside your `domain` is a hard violation the
+integration containment gate (`--acting`, §2.7) rejects.
 
 ## SplitProposal shape
 
