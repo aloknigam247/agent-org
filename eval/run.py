@@ -39,7 +39,10 @@ KERNEL = Path(__file__).resolve().parent.parent
 
 
 def sh(args, cwd=None, env=None, timeout=None):
-    return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    # decode as utf-8 (copilot's JSON stream is utf-8); replace stray bytes so a reader thread never
+    # crashes on Windows' default cp1252 codec.
+    return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def build_sandbox(fixture: Path, dest: Path):
