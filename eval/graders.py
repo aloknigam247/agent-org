@@ -62,9 +62,11 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
     checks.append({"check": "coverage", "result": "pass" if cov["status"] == "ok" else "fail",
                    "evidence": cov["violations"][:5]})
 
-    # containment — every change is owned by the acting node (the agent under test)
+    # containment — a leaf must keep every change in its own domain; a parent legitimately routes across
+    # its subtree, so routing/paths/coverage validate it instead (a single-owner check would false-fail).
     acting = manifest.get("agent", "main")
-    if acting in {n["id"] for n in org.get("nodes", [])} and changed_paths:
+    acting_node = {n["id"]: n for n in org.get("nodes", [])}.get(acting)
+    if acting_node and not acting_node.get("children") and changed_paths:
         con = ov.check_containment(org, acting, changed_paths)
         checks.append({"check": "containment", "result": "pass" if con["status"] == "ok" else "fail",
                        "evidence": con["violations"][:5]})

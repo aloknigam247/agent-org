@@ -161,6 +161,24 @@ def all_green_passes():
     assert check(g, "containment")["result"] == "pass"  # agent "a" only touched region_a/*
 
 
+# --- containment applies to a leaf; a parent routing across its subtree is validated by routing/paths -
+
+@case
+def containment_fails_for_leaf_touching_sibling():
+    m = {"id": "t", "agent": "a"}  # a is a leaf owning region_a/**
+    g = graders.grade(m, ORG, ["misc/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(g, "containment")["result"] == "fail"  # misc/* is owned by b, not a
+    assert g["passed"] is False
+
+
+@case
+def containment_skipped_for_parent():
+    m = {"id": "t", "agent": "root"}  # root is a Parent; it may route anywhere in its subtree
+    g = graders.grade(m, ORG, ["region_a/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(g, "containment") is None  # no single-owner containment check for a parent
+    assert g["passed"] is True
+
+
 def run():
     failed = 0
     try:
