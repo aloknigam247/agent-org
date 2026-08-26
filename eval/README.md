@@ -73,6 +73,14 @@ delegation / oracle-before-commit / loop rates. These reveal *how* an outcome wa
 parent that produces the right file without invoking the owning child. Use `--keep` to retain the raw
 per-call trajectory for inspection.
 
+## Judge (advisory, opt-in)
+
+Add a `judge: "<question>"` field to a manifest and the runner asks a strict headless LLM judge that
+one question about each run (given the intent, required behavior, response, and changed paths),
+recording `{verdict: pass|fail|unsure, rationale}` per run and a verdict tally in the summary. It is
+**advisory** — never folded into pass/fail — and used only where a command can't decide a qualitative
+point. No `judge` field means no judge call (no cost); `--no-judge` skips it globally.
+
 ## Self-tests
 
 Deterministic, offline, no agent calls — fresh scenarios independent of the design examples that pin

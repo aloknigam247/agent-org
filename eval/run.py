@@ -21,6 +21,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -268,7 +269,13 @@ def summarize(runs):
         "calibration": [{"domain_est_tokens": r.get("domain_est_tokens"),
                          "task_input_tokens": r.get("task_input_tokens")} for r in runs],
         "trajectory": _summarize_trajectory(runs),  # advisory-only (never folded into pass_rate)
+        "judge": _summarize_judge(runs),             # advisory-only LLM verdict tally (empty if no rubric)
     }
+
+
+def _summarize_judge(runs):
+    verdicts = [r["judge"]["verdict"] for r in runs if r.get("judge")]
+    return dict(collections.Counter(verdicts)) if verdicts else {}
 
 
 def _summarize_trajectory(runs):
@@ -287,7 +294,60 @@ def _summarize_trajectory(runs):
     }
 
 
-def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
+JUDGE_RUBRIC_PREFIX = (
+    "You are a strict, impartial evaluator of an AI agent's work. Judge ONLY the question in `rubric` "
+    "using the evidence in the payload; do not run tools. Reply with exactly one JSON object and "
+    "nothing else: {\"verdict\": \"pass\" | \"fail\" | \"unsure\", \"rationale\": \"<= 1 sentence\"}."
+)
+
+
+def _parse_judge(text):
+    start, end = text.find("{"), text.rfind("}")
+    candidate = text[start:end + 1] if (start != -1 and end > start) else text
+    # strict JSON first, then a whitespace-normalized retry (LLMs often put raw newlines in strings)
+    for attempt in (candidate, re.sub(r"\s+", " ", candidate)):
+        try:
+            o = json.loads(attempt)
+            v = str(o.get("verdict", "unsure")).lower()
+            return {"verdict": v if v in ("pass", "fail", "unsure") else "unsure",
+                    "rationale": str(o.get("rationale", ""))[:200]}
+        except Exception:
+            pass
+    vm = re.search(r"verdict\W+(pass|fail|unsure)", text, re.I)  # last-ditch loose extraction
+    if vm:
+        rm = re.search(r"rationale\W+\"?([^\"}\n]{0,200})", text, re.I)
+        return {"verdict": vm.group(1).lower(), "rationale": (rm.group(1).strip() if rm else "")[:200]}
+    return {"verdict": "unsure", "rationale": (text[:120] or "no judge output")}
+
+
+def judge_run(manifest, result, env, model):
+    """Advisory LLM judge, opt-in via the manifest `judge` rubric. Never folded into pass/fail."""
+    rubric = manifest.get("judge")
+    if not rubric:
+        return None
+    payload = {
+        "rubric": rubric,
+        "intent": manifest.get("intent"),
+        "required_behavior": manifest.get("required_behavior"),
+        "agent_response": (result.get("response") or "")[:2000],
+        "changed_paths": result.get("changed_paths", []),
+    }
+    prompt = JUDGE_RUBRIC_PREFIX + "\n\n" + json.dumps(payload, indent=2)
+    scratch = Path(tempfile.mkdtemp(prefix="judge-"))
+    try:
+        cmd = ["copilot", "-p", prompt, "-C", str(scratch), "--allow-all-tools", "--no-ask-user",
+               "--no-color", "-s", "--log-level", "none"]
+        if model:
+            cmd += ["--model", model]
+        try:
+            return _parse_judge((sh(cmd, cwd=scratch, env=env, timeout=120).stdout or "").strip())
+        except subprocess.TimeoutExpired:
+            return {"verdict": "unsure", "rationale": "judge timed out"}
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True):
     manifest = yaml.safe_load((fixture / "manifest.yml").read_text(encoding="utf-8"))
     env = copilot_env()
     runs = []
@@ -303,6 +363,10 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
             mark_runaway(result, manifest)
             add_calibration(result, org, sandbox, manifest.get("agent", "main"))
             result["trajectory_analysis"] = analyze_trajectory(result.get("trajectory", []))
+            if judge:
+                verdict = judge_run(manifest, result, env, model)
+                if verdict:
+                    result["judge"] = verdict
             if keep:
                 result["sandbox"] = str(sandbox)
             else:
@@ -322,8 +386,9 @@ def main(argv=None):
     parser.add_argument("--model", default=None)
     parser.add_argument("--effort", default=None)
     parser.add_argument("--keep", action="store_true", help="keep the sandbox for inspection")
+    parser.add_argument("--no-judge", action="store_true", help="skip the advisory LLM judge")
     args = parser.parse_args(argv)
-    result = run_case(Path(args.fixture), args.repeats, args.model, args.effort, args.keep)
+    result = run_case(Path(args.fixture), args.repeats, args.model, args.effort, args.keep, not args.no_judge)
     print(json.dumps(result, indent=2))
 
 
