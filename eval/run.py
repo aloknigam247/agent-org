@@ -161,6 +161,27 @@ def analyze_trajectory(trajectory):
     }
 
 
+INFRA_STATUS = {401, 402, 403, 429}
+
+
+def _infra_error(events):
+    """Detect an infrastructure failure (quota/auth/rate-limit) — the agent never really ran, so the
+    run must not count as an agent pass/fail. Returns a compact dict or None."""
+    for e in events:
+        if e.get("type") == "session.error":
+            d = e.get("data") or {}
+            return {"type": d.get("errorType") or d.get("errorCode") or "error",
+                    "status": d.get("statusCode"), "message": (d.get("message") or "")[:200]}
+    for e in events:
+        if e.get("type") in ("model.call_failure", "model.model_call_failure"):
+            d = e.get("data") or {}
+            status = d.get("statusCode") or (d.get("modelCall") or {}).get("status")
+            if status in INFRA_STATUS:
+                return {"type": "model_call_failure", "status": status,
+                        "message": (d.get("errorMessage") or "")[:200]}
+    return None
+
+
 def invoke(manifest, sandbox: Path, env, model, effort, timeout):
     usage = sandbox / ".eval-usage.json"
     cmd = [
@@ -196,6 +217,7 @@ def invoke(manifest, sandbox: Path, env, model, effort, timeout):
         "duration_s": round(time.time() - started, 1),
         "usage": metrics,
         "trajectory": _extract_trajectory(events),
+        "infra_error": _infra_error(events),
     }
 
 
@@ -238,42 +260,55 @@ def add_calibration(result, org, sandbox, acting):
 
 
 def summarize(runs):
-    """Aggregate N repeats into an estimated pass@1 rate, per-check rates, failure modes, and cost."""
+    """Aggregate N repeats into an estimated pass@1 rate, per-check rates, failure modes, and cost.
+    Runs that failed to invoke for infrastructure reasons (quota/auth/rate-limit) tell us nothing about
+    the agent, so they are excluded from the quality numbers and reported separately."""
     n = len(runs)
     if not n:
         return {}
-    accepted = sum(1 for r in runs if r["grade"]["passed"] and not r.get("runaway"))
-    names = sorted({c["check"] for r in runs for c in r["grade"]["checks"]})
+    infra = [r for r in runs if r.get("infra_error")]
+    valid = [r for r in runs if not r.get("infra_error")]
+    if not valid:
+        return {"repeats": n, "infra_error_count": len(infra), "pass_rate": None,
+                "note": "all runs failed to invoke (infrastructure/quota); not a measure of the agent",
+                "infra_error_sample": infra[0]["infra_error"] if infra else None}
+    m = len(valid)
+    accepted = sum(1 for r in valid if r["grade"]["passed"] and not r.get("runaway"))
+    names = sorted({c["check"] for r in valid for c in r["grade"]["checks"]})
     per_check, fail_modes = {}, {}
     for name in names:
         fails, sample = 0, None
-        for r in runs:
+        for r in valid:
             for c in r["grade"]["checks"]:
                 if c["check"] == name and c["result"] == "fail":
                     fails += 1
                     sample = sample or c["evidence"]
-        per_check[name] = round((n - fails) / n, 3)
+        per_check[name] = round((m - fails) / m, 3)
         if fails:
             fail_modes[name] = {"failed": fails, "sample": sample}
-    runaway = sum(1 for r in runs if r.get("runaway"))
+    runaway = sum(1 for r in valid if r.get("runaway"))
     if runaway:
         fail_modes["runaway"] = {"failed": runaway,
-                                 "sample": next((r["runaway_reasons"] for r in runs if r.get("runaway")), None)}
-    costs = [r.get("usage", {}).get("totalPremiumRequestCost", 0) or 0 for r in runs]
-    durations = [r.get("duration_s", 0) for r in runs]
-    return {
+                                 "sample": next((r["runaway_reasons"] for r in valid if r.get("runaway")), None)}
+    costs = [r.get("usage", {}).get("totalPremiumRequestCost", 0) or 0 for r in valid]
+    durations = [r.get("duration_s", 0) for r in valid]
+    out = {
         "repeats": n,
-        "pass_rate": round(accepted / n, 3),  # estimated pass@1 (production gets one attempt)
+        "valid_runs": m,
+        "pass_rate": round(accepted / m, 3),  # estimated pass@1 over runs that actually invoked
         "per_check_pass_rate": per_check,
         "failure_modes": fail_modes,
-        "cost": {"mean": round(sum(costs) / n, 3), "max": max(costs)},
-        "duration_s": {"mean": round(sum(durations) / n, 1), "max": max(durations)},
+        "cost": {"mean": round(sum(costs) / m, 3), "max": max(costs)},
+        "duration_s": {"mean": round(sum(durations) / m, 1), "max": max(durations)},
         "runaway_count": runaway,
         "calibration": [{"domain_est_tokens": r.get("domain_est_tokens"),
-                         "task_input_tokens": r.get("task_input_tokens")} for r in runs],
-        "trajectory": _summarize_trajectory(runs),  # advisory-only (never folded into pass_rate)
-        "judge": _summarize_judge(runs),             # advisory-only LLM verdict tally (empty if no rubric)
+                         "task_input_tokens": r.get("task_input_tokens")} for r in valid],
+        "trajectory": _summarize_trajectory(valid),  # advisory-only (never folded into pass_rate)
+        "judge": _summarize_judge(valid),             # advisory-only LLM verdict tally (empty if no rubric)
     }
+    if infra:
+        out["infra_error_count"] = len(infra)
+    return out
 
 
 def _summarize_judge(runs):
