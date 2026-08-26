@@ -347,7 +347,7 @@ def judge_run(manifest, result, env, model):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True):
+def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True, prepare=None):
     manifest = yaml.safe_load((fixture / "manifest.yml").read_text(encoding="utf-8"))
     env = copilot_env()
     runs = []
@@ -355,6 +355,8 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
         sandbox = Path(tempfile.mkdtemp(prefix=f"eval-{manifest['id']}-"))
         try:
             build_sandbox(fixture, sandbox)
+            if prepare:
+                prepare(sandbox)  # e.g. strip the node's bundle for a payback cold arm
             result = invoke(manifest, sandbox, env, model, effort, manifest.get("timeout", 300))
             result.update(capture(sandbox))
             org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))

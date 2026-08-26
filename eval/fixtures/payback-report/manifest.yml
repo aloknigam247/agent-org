@@ -1,0 +1,15 @@
+id: payback-report
+unit: node
+agent: main
+intent: "Create this month's status report at report/2026-08.md, following our house format for status reports."
+expected_owner: [main]
+allowed_paths: ["**"]
+forbidden_paths: []
+required_behavior:
+  - "report/2026-08.md follows the house format: first line '# Status Report', then Highlights, Risks, Next Steps."
+build_cmd: 'python -c "import pathlib; t=pathlib.Path(''report/2026-08.md'').read_text(); ls=t.splitlines(); assert ls and ls[0].strip()==''# Status Report''; i=t.find(''## Highlights''); j=t.find(''## Risks''); k=t.find(''## Next Steps''); assert 0<=i<j<k, (i,j,k)"'
+bundle_paths: ["wiki/FORMAT.md"]
+timeout: 300
+max_cost: null
+max_model_calls: null
+threshold_override: null

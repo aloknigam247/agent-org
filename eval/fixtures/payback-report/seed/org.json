@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "root": "main",
+  "nodes": [
+    {
+      "id": "main",
+      "parent": null,
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": ["**"],
+        "concerns": ["the entire repository"],
+        "excludes": []
+      }
+    }
+  ]
+}
