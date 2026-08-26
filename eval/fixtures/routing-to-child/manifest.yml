@@ -1,0 +1,14 @@
+id: routing-to-child
+unit: node
+agent: main
+intent: "Add a new book record at catalog/books/dune.md containing the title Dune and the author Frank Herbert."
+expected_owner: [catalog]
+allowed_paths: ["catalog/**"]
+forbidden_paths: ["members/**"]
+required_behavior:
+  - "catalog/books/dune.md exists and mentions Dune and Frank Herbert"
+build_cmd: 'python -c "import pathlib; t=pathlib.Path(''catalog/books/dune.md'').read_text(); assert ''Dune'' in t and ''Frank Herbert'' in t"'
+timeout: 300
+max_cost: null
+max_model_calls: null
+threshold_override: null

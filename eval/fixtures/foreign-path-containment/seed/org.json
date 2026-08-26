@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "root": "main",
+  "nodes": [
+    {
+      "id": "main",
+      "parent": null,
+      "children": ["catalog", "members"],
+      "mode": "Parent",
+      "charter": {
+        "domain": [".github/**", "org.json", "org.schema.json", ".gitignore", "shared/**"],
+        "concerns": ["shared config and cross-cutting infrastructure"],
+        "excludes": []
+      }
+    },
+    {
+      "id": "catalog",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": ["catalog/**"],
+        "concerns": ["book records"],
+        "excludes": []
+      }
+    },
+    {
+      "id": "members",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": ["members/**"],
+        "concerns": ["library member records"],
+        "excludes": []
+      }
+    }
+  ]
+}

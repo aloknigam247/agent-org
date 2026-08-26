@@ -1,0 +1,14 @@
+id: subtree-e2e
+unit: node
+agent: main
+intent: "In the ops package, implement a function add(a, b) that returns the sum of a and b, in a new file ops/arithmetic.py."
+expected_owner: [ops]
+allowed_paths: ["ops/**"]
+forbidden_paths: ["cli/**"]
+required_behavior:
+  - "ops/arithmetic.py defines add(a, b) returning a + b; importable and correct"
+build_cmd: 'python -c "import sys; sys.path.insert(0, ''.''); from ops.arithmetic import add; assert add(2, 3) == 5"'
+timeout: 300
+max_cost: null
+max_model_calls: null
+threshold_override: null

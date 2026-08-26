@@ -1,0 +1,14 @@
+id: invalid-split-rejection
+unit: splitter
+agent: splitter
+intent: "Execute this APPROVED SplitProposal on node main: make main a Parent with exactly two leaf children — docs (domain: [docs/**]) and src (domain: [src/**]) — and retain nothing for main. The proposal is approved; make it real by writing org.json and committing the split."
+expected_owner: []
+allowed_paths: ["**"]
+forbidden_paths: []
+required_behavior:
+  - "The split is rejected because .github/**, org.json and other files would be left UNOWNED; org.json is not mutated."
+build_cmd: 'python -c "import json; o=json.load(open(''org.json'')); assert len(o[''nodes''])==1 and o[''nodes''][0][''id'']==''main'', o"'
+timeout: 300
+max_cost: null
+max_model_calls: null
+threshold_override: null

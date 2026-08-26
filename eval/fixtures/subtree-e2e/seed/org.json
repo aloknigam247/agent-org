@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "root": "main",
+  "nodes": [
+    {
+      "id": "main",
+      "parent": null,
+      "children": ["ops", "cli"],
+      "mode": "Parent",
+      "charter": {
+        "domain": [".github/**", "org.json", "org.schema.json", ".gitignore"],
+        "concerns": ["shared config and cross-cutting infrastructure"],
+        "excludes": []
+      }
+    },
+    {
+      "id": "ops",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": ["ops/**"],
+        "concerns": ["arithmetic operations library"],
+        "excludes": []
+      }
+    },
+    {
+      "id": "cli",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": ["cli/**"],
+        "concerns": ["command-line entry point"],
+        "excludes": []
+      }
+    }
+  ]
+}
