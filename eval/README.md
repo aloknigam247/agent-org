@@ -63,6 +63,16 @@ run never counts as a pass), `per_check_pass_rate`, `failure_modes` (a sample pe
 `cost`, `duration_s`, `runaway_count`, and `calibration` pairs (static domain-size proxy vs. actual
 input tokens) for recalibrating the split threshold. Pin `--model`/`--effort` for reproducible numbers.
 
+## Trajectory (advisory)
+
+The runner captures the agent's tool-call trajectory from the `--output-format json` stream
+(`tool.execution_start`/`tool.execution_complete`) and reports advisory signals that **never change
+pass/fail**: per-run `trajectory_analysis` (`tool_calls`, `tools`, `delegated_to`, `ran_oracle`,
+`committed`, `oracle_before_commit`, `looped_tools`) and a summary `trajectory` block with the
+delegation / oracle-before-commit / loop rates. These reveal *how* an outcome was reached — e.g. a
+parent that produces the right file without invoking the owning child. Use `--keep` to retain the raw
+per-call trajectory for inspection.
+
 ## Self-tests
 
 Deterministic, offline, no agent calls — fresh scenarios independent of the design examples that pin

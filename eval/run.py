@@ -18,6 +18,7 @@ Auth: the harness's Copilot subprocess cannot use the parent session's Entra aut
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import shutil
@@ -71,13 +72,98 @@ def copilot_env():
     return env
 
 
+def _parse_jsonl(stream):
+    events = []
+    for line in (stream or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except Exception:
+            pass
+    return events
+
+
+def _extract_response(events):
+    """The agent's final text: the result event if present, else the concatenated assistant messages."""
+    for e in reversed(events):
+        if e.get("type") == "result":
+            data = e.get("data")
+            if isinstance(data, str):
+                return data.strip()
+            if isinstance(data, dict):
+                for k in ("response", "message", "content", "text"):
+                    if isinstance(data.get(k), str):
+                        return data[k].strip()
+    texts = []
+    for e in events:
+        if e.get("type") == "assistant.message":
+            data = e.get("data", {})
+            c = (data.get("content") or data.get("text")) if isinstance(data, dict) else None
+            if isinstance(c, str):
+                texts.append(c)
+    return "\n".join(texts).strip()
+
+
+def _extract_trajectory(events):
+    """Ordered tool calls [{tool, args, success}], joining start/complete by toolCallId."""
+    by_id, order = {}, []
+    for e in events:
+        t = e.get("type")
+        d = e.get("data", {}) if isinstance(e.get("data"), dict) else {}
+        if t == "tool.execution_start":
+            item = {"tool": d.get("toolName"), "args": d.get("arguments"), "success": None}
+            by_id[d.get("toolCallId")] = item
+            order.append(item)
+        elif t == "tool.execution_complete":
+            item = by_id.get(d.get("toolCallId"))
+            if item is not None:
+                item["success"] = d.get("success")
+    return order
+
+
+SHELL_TOOLS = {"bash", "pwsh", "powershell", "shell", "run_in_terminal", "native_tools-pwsh"}
+AGENT_TOOLS = {"task", "invoke_agent", "run_agent", "run_factory"}
+
+
+def _shell_command(item):
+    a = item.get("args") or {}
+    return (a.get("command") or a.get("cmd") or a.get("script") or "") if isinstance(a, dict) else ""
+
+
+def analyze_trajectory(trajectory):
+    """Advisory-only trajectory signals (never affects the pass/fail verdict, per E5 fully-advisory)."""
+    cmds = [_shell_command(t) for t in trajectory if t.get("tool") in SHELL_TOOLS]
+    oracle_idx = next((i for i, c in enumerate(cmds) if "owner_validator" in c), None)
+    commit_idx = next((i for i, c in enumerate(cmds) if "git" in c and "commit" in c), None)
+    delegated = []
+    for t in trajectory:
+        if t.get("tool") in AGENT_TOOLS:
+            a = t.get("args") or {}
+            ag = (a.get("agent_type") or a.get("agent") or a.get("name")) if isinstance(a, dict) else None
+            if ag:
+                delegated.append(ag)
+    repeats = collections.Counter((t.get("tool"), json.dumps(t.get("args"), sort_keys=True, default=str))
+                                  for t in trajectory)
+    return {
+        "tool_calls": len(trajectory),
+        "tools": dict(collections.Counter(t.get("tool") for t in trajectory)),
+        "delegated_to": delegated,
+        "ran_oracle": oracle_idx is not None,
+        "committed": commit_idx is not None,
+        "oracle_before_commit": commit_idx is None or (oracle_idx is not None and oracle_idx < commit_idx),
+        "looped_tools": sorted({tool for (tool, _), n in repeats.items() if n >= 3}),
+    }
+
+
 def invoke(manifest, sandbox: Path, env, model, effort, timeout):
     usage = sandbox / ".eval-usage.json"
     cmd = [
         "copilot", "-p", manifest["intent"],
         "--agent", manifest.get("agent", "main"),
         "-C", str(sandbox), "--add-dir", str(sandbox),
-        "--allow-all-tools", "--no-ask-user", "--no-color", "-s",
+        "--allow-all-tools", "--no-ask-user", "--no-color", "--output-format", "json",
         "--log-level", "none", "--usage-output-file", str(usage),
     ]
     if model:
@@ -88,9 +174,10 @@ def invoke(manifest, sandbox: Path, env, model, effort, timeout):
     timed_out = False
     try:
         proc = sh(cmd, cwd=sandbox, env=env, timeout=timeout)
-        response, code = proc.stdout, proc.returncode
+        stream, code = proc.stdout, proc.returncode
     except subprocess.TimeoutExpired as exc:
-        response, code, timed_out = (exc.stdout or ""), None, True
+        stream, code, timed_out = (exc.stdout or ""), None, True
+    events = _parse_jsonl(stream)
     metrics = {}
     if usage.exists():
         try:
@@ -99,11 +186,12 @@ def invoke(manifest, sandbox: Path, env, model, effort, timeout):
             pass
         usage.unlink(missing_ok=True)
     return {
-        "response": (response or "").strip(),
+        "response": _extract_response(events),
         "exit": code,
         "timed_out": timed_out,
         "duration_s": round(time.time() - started, 1),
         "usage": metrics,
+        "trajectory": _extract_trajectory(events),
     }
 
 
@@ -179,6 +267,23 @@ def summarize(runs):
         "runaway_count": runaway,
         "calibration": [{"domain_est_tokens": r.get("domain_est_tokens"),
                          "task_input_tokens": r.get("task_input_tokens")} for r in runs],
+        "trajectory": _summarize_trajectory(runs),  # advisory-only (never folded into pass_rate)
+    }
+
+
+def _summarize_trajectory(runs):
+    """Aggregate the advisory trajectory signals across repeats. Reported, never scored."""
+    a = [r["trajectory_analysis"] for r in runs if r.get("trajectory_analysis")]
+    if not a:
+        return {}
+    n = len(a)
+    return {
+        "mean_tool_calls": round(sum(x["tool_calls"] for x in a) / n, 1),
+        "delegation_rate": round(sum(1 for x in a if x["delegated_to"]) / n, 3),
+        "ran_oracle_rate": round(sum(1 for x in a if x["ran_oracle"]) / n, 3),
+        "committed_rate": round(sum(1 for x in a if x["committed"]) / n, 3),
+        "oracle_before_commit_rate": round(sum(1 for x in a if x["oracle_before_commit"]) / n, 3),
+        "looped_any_rate": round(sum(1 for x in a if x["looped_tools"]) / n, 3),
     }
 
 
@@ -197,8 +302,11 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool):
                                              result["response"], result["exit"], result["timed_out"])
             mark_runaway(result, manifest)
             add_calibration(result, org, sandbox, manifest.get("agent", "main"))
+            result["trajectory_analysis"] = analyze_trajectory(result.get("trajectory", []))
             if keep:
                 result["sandbox"] = str(sandbox)
+            else:
+                result.pop("trajectory", None)  # keep the compact analysis; drop the raw call list
             runs.append(result)
         finally:
             if not keep:
