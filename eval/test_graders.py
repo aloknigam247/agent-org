@@ -364,6 +364,17 @@ def preflight_rejects_baseline_coverage_gap():
     assert any("coverage" in p for p in probs), probs
 
 
+# --- host-mode invocation omits --agent so the Host performs the hardcoded entry to main -----------
+
+@case
+def host_mode_omits_agent_flag():
+    usage = Path(tempfile.gettempdir()) / "u.json"
+    host_cmd = run.build_invoke_cmd({"agent": "host", "intent": "x"}, Path("/sb"), None, None, usage)
+    assert "--agent" not in host_cmd, host_cmd
+    node_cmd = run.build_invoke_cmd({"agent": "catalog", "intent": "x"}, Path("/sb"), None, None, usage)
+    assert node_cmd[node_cmd.index("--agent") + 1] == "catalog", node_cmd
+
+
 def _main():
     failed = 0
     try:

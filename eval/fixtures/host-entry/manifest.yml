@@ -1,0 +1,15 @@
+id: host-entry
+unit: node
+agent: host
+intent: "Create a file named entry.txt whose entire contents are exactly the single word: routed"
+expected_owner: [main]
+allowed_paths: ["**"]
+forbidden_paths: []
+required_paths: ["entry.txt"]
+required_behavior:
+  - "The Host routes the request to main (trajectory shows a task call to main), which creates entry.txt."
+build_cmd: 'python -c "import pathlib; assert pathlib.Path(''entry.txt'').read_text().strip() == ''routed''"'
+timeout: 240
+max_cost: null
+max_model_calls: null
+threshold_override: null

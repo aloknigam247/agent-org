@@ -100,10 +100,11 @@ def preflight(fixture: Path, manifest):
             problems += [f"baseline coverage: {v.get('rule')} {v.get('path') or v.get('evidence')}"
                          for v in cov["violations"][:3]]
         agent = manifest.get("agent", "main")
-        if agent not in {n["id"] for n in org.get("nodes", [])} and agent not in META_AGENTS:
-            problems.append(f"invoked agent {agent!r} is neither a seed node nor a meta-agent")
-        if not (sb / ".github" / "agents" / f"{agent}.md").exists():
-            problems.append(f"missing agent-def .github/agents/{agent}.md")
+        if agent != HOST_AGENT:  # the Host pseudo-agent is not a node and needs no def
+            if agent not in {n["id"] for n in org.get("nodes", [])} and agent not in META_AGENTS:
+                problems.append(f"invoked agent {agent!r} is neither a seed node nor a meta-agent")
+            if not (sb / ".github" / "agents" / f"{agent}.md").exists():
+                problems.append(f"missing agent-def .github/agents/{agent}.md")
         bundle = bv.check_bundle(org, sb)  # seed bundle must satisfy the self-ownership invariants
         problems += [f"bundle: {v['evidence']}" for v in bundle["violations"][:3]]
         bc = manifest.get("build_cmd")
@@ -235,19 +236,29 @@ def _infra_error(events):
     return None
 
 
-def invoke(manifest, sandbox: Path, env, model, effort, timeout):
-    usage = sandbox / ".eval-usage.json"
-    cmd = [
-        "copilot", "-p", manifest["intent"],
-        "--agent", manifest.get("agent", "main"),
-        "-C", str(sandbox), "--add-dir", str(sandbox),
-        "--allow-all-tools", "--no-ask-user", "--no-color", "--output-format", "json",
-        "--log-level", "none", "--usage-output-file", str(usage),
-    ]
+HOST_AGENT = "host"  # invoke the Host session itself (no --agent), so it routes to main per its manual
+
+
+def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path):
+    """The `copilot` argv for a run. `agent: host` omits --agent so the Host (copilot-instructions.md)
+    performs the hardcoded entry to main — the only way to exercise the Host->main entry invariant."""
+    agent = manifest.get("agent", "main")
+    cmd = ["copilot", "-p", manifest["intent"]]
+    if agent != HOST_AGENT:
+        cmd += ["--agent", agent]
+    cmd += ["-C", str(sandbox), "--add-dir", str(sandbox),
+            "--allow-all-tools", "--no-ask-user", "--no-color", "--output-format", "json",
+            "--log-level", "none", "--usage-output-file", str(usage)]
     if model:
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
+    return cmd
+
+
+def invoke(manifest, sandbox: Path, env, model, effort, timeout):
+    usage = sandbox / ".eval-usage.json"
+    cmd = build_invoke_cmd(manifest, sandbox, model, effort, usage)
     started = time.time()
     timed_out = False
     try:
