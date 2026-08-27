@@ -99,8 +99,9 @@ Deterministic, offline, no agent calls — fresh scenarios independent of the de
 the grading backbone:
 
 ```pwsh
-python .github/tools/test_owner_validator.py   # oracle: glob dialect, coverage, tree, containment
-python eval/test_graders.py                    # grade(): invocation/routing/paths/build verdicts
+python .github/tools/test_owner_validator.py   # oracle: glob, coverage, tree, containment, --size, split
+python .github/tools/test_bundle_validator.py  # bundle integrity: SO2 presence, single-writer, orphans
+python eval/test_graders.py                    # grade() + harness: capture, fail-closed, preflight
 ```
 
 Each exits non-zero if any case fails.
