@@ -1,3 +1,8 @@
+---
+owner: main
+sources: []
+---
+
 # House format for status reports
 
 Every status report in this repository MUST follow this exact structure, with no deviations:

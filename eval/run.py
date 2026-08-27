@@ -34,6 +34,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
 import owner_validator as ov  # noqa: E402  (path added by graders import)
+import bundle_validator as bv  # noqa: E402  (same .github/tools path)
 
 KERNEL = Path(__file__).resolve().parent.parent
 META_AGENTS = {"splitter"}  # kernel meta-agents that are not org nodes but are valid `agent` targets
@@ -103,6 +104,8 @@ def preflight(fixture: Path, manifest):
             problems.append(f"invoked agent {agent!r} is neither a seed node nor a meta-agent")
         if not (sb / ".github" / "agents" / f"{agent}.md").exists():
             problems.append(f"missing agent-def .github/agents/{agent}.md")
+        bundle = bv.check_bundle(org, sb)  # seed bundle must satisfy the self-ownership invariants
+        problems += [f"bundle: {v['evidence']}" for v in bundle["violations"][:3]]
         bc = manifest.get("build_cmd")
         if bc and not manifest.get("expected_no_changes"):
             try:

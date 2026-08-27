@@ -11,5 +11,5 @@ Before acting, read and follow the shared node loop in `.github/node-loop.md`. D
 
 ## Bundle
 
-- **wiki:** `wiki/FORMAT.md` — the mandatory house format for status reports. Read it before writing
-  any report.
+- **wiki:** `wiki/main/FORMAT.md` — the mandatory house format for status reports. Read it before
+  writing any report.
