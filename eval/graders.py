@@ -106,12 +106,16 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
         checks.append({"check": "containment", "result": "pass" if con["status"] == "ok" else "fail",
                        "evidence": con["violations"][:5]})
 
-    # build/tests — optional objective outcome
+    # build/tests — optional objective outcome (timeout-bounded so a hung build fails, not stalls)
     build_cmd = manifest.get("build_cmd")
     if build_cmd:
-        proc = subprocess.run(build_cmd, cwd=sandbox, shell=True, capture_output=True, text=True)
-        checks.append({"check": "build", "result": "pass" if proc.returncode == 0 else "fail",
-                       "evidence": f"exit={proc.returncode}"})
+        try:
+            proc = subprocess.run(build_cmd, cwd=sandbox, shell=True, capture_output=True, text=True,
+                                  timeout=manifest.get("build_timeout", 60))
+            result, evidence = ("pass" if proc.returncode == 0 else "fail"), f"exit={proc.returncode}"
+        except subprocess.TimeoutExpired:
+            result, evidence = "fail", "build timed out"
+        checks.append({"check": "build", "result": result, "evidence": evidence})
 
     return {"passed": all(c["result"] == "pass" for c in checks), "checks": checks}
 

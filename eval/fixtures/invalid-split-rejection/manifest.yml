@@ -7,7 +7,8 @@ allowed_paths: ["**"]
 forbidden_paths: []
 required_behavior:
   - "The split is rejected because .github/**, org.json and other files would be left UNOWNED; org.json is not mutated."
-build_cmd: 'python -c "import json; o=json.load(open(''org.json'')); assert len(o[''nodes''])==1 and o[''nodes''][0][''id'']==''main'', o"'
+expected_no_changes: true
+build_cmd: null
 timeout: 300
 max_cost: null
 max_model_calls: null

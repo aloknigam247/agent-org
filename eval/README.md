@@ -34,13 +34,25 @@ intent: "<the prompt given to the agent>"
 expected_owner: [main]         # human-labeled owning node(s) — routing ground truth (not from org.json)
 allowed_paths: ["**"]          # regions the change may touch
 forbidden_paths: []            # regions it must not touch
-required_behavior: []          # human-readable outcome checks (E2+; judge only where a command can't decide)
+required_paths: []             # globs at least one changed path must match (fail closed on a no-op)
+required_touched_owners: []    # owners that must appear among the acting node(s) (fail closed on a no-op)
+expected_no_changes: null      # true for a refuse/reject case that must change nothing at all
+required_behavior: []          # human-readable outcome checks (judge only where a command can't decide)
 build_cmd: null                # optional outcome assertion (exit 0 = pass); verifies required_behavior
+build_timeout: 60              # seconds; a build that overruns fails (never stalls the run)
+judge: null                    # optional advisory LLM-judge question (never folded into pass/fail)
 timeout: 240                   # seconds (case wall clock; exceeding it flags a runaway)
 max_cost: null                 # optional USD cap; premium-request cost above it flags a runaway
 max_model_calls: null          # optional cap on model calls; above it flags a runaway
 threshold_override: null       # optional split-threshold fraction (scale down so a small fixture trips a split)
 ```
+
+Every seed `org.json` must satisfy `org.schema.json` (e.g. `version >= 3`). Before spending an agent
+run, the harness **preflights** each fixture: schema-valid seed, clean baseline coverage, the invoked
+agent exists with a def, and — for a mutation fixture — `build_cmd` **fails** on the untouched seed (so
+a later green build proves the agent did the work, not that the fixture was pre-satisfied). A fixture
+that fails preflight is reported as a `fixture_error` and consumes no agent runs (`--no-preflight`
+skips this).
 
 Fixtures are **versioned and immutable** — new reality means a new fixture version, never a silent
 edit of an existing one.

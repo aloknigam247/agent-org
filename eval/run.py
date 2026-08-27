@@ -36,6 +36,7 @@ import graders  # noqa: E402
 import owner_validator as ov  # noqa: E402  (path added by graders import)
 
 KERNEL = Path(__file__).resolve().parent.parent
+META_AGENTS = {"splitter"}  # kernel meta-agents that are not org nodes but are valid `agent` targets
 
 
 def sh(args, cwd=None, env=None, timeout=None):
@@ -66,6 +67,54 @@ def build_sandbox(fixture: Path, dest: Path):
     sh(["git", "add", "-A"], cwd=dest)
     sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval", "commit", "-q", "--no-verify", "-m", "chore: seed"], cwd=dest)
     return sh(["git", "rev-parse", "HEAD"], cwd=dest).stdout.strip()
+
+
+def _schema_problems(org):
+    """Validate an org against org.schema.json (the single source of truth). Best-effort if jsonschema
+    is unavailable."""
+    try:
+        import jsonschema
+    except ImportError:
+        return []
+    schema = json.loads((KERNEL / "org.schema.json").read_text(encoding="utf-8"))
+    return [f"schema: {e.message}" for e in list(jsonschema.Draft7Validator(schema).iter_errors(org))[:3]]
+
+
+def preflight(fixture: Path, manifest):
+    """Validate a fixture before spending an agent run: schema-valid seed, clean baseline coverage, the
+    invoked agent exists with a def, and a mutation fixture actually FAILS its outcome on the untouched
+    seed (so a later green build means the agent did the work, not that the fixture was pre-satisfied).
+    Returns a list of problems (empty = ok)."""
+    problems = []
+    sb = Path(tempfile.mkdtemp(prefix="preflight-"))
+    try:
+        build_sandbox(fixture, sb)
+        try:
+            org = json.loads((sb / "org.json").read_text(encoding="utf-8"))
+        except Exception as exc:
+            return [f"seed org.json unreadable: {exc}"]
+        problems += _schema_problems(org)
+        cov = ov.validate(org, ov.git_tracked(sb))
+        if cov["status"] != "ok":
+            problems += [f"baseline coverage: {v.get('rule')} {v.get('path') or v.get('evidence')}"
+                         for v in cov["violations"][:3]]
+        agent = manifest.get("agent", "main")
+        if agent not in {n["id"] for n in org.get("nodes", [])} and agent not in META_AGENTS:
+            problems.append(f"invoked agent {agent!r} is neither a seed node nor a meta-agent")
+        if not (sb / ".github" / "agents" / f"{agent}.md").exists():
+            problems.append(f"missing agent-def .github/agents/{agent}.md")
+        bc = manifest.get("build_cmd")
+        if bc and not manifest.get("expected_no_changes"):
+            try:
+                proc = subprocess.run(bc, cwd=sb, shell=True, capture_output=True, text=True,
+                                      timeout=manifest.get("build_timeout", 60))
+                if proc.returncode == 0:
+                    problems.append("build_cmd already passes on the untouched seed (fixture is a no-op)")
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        shutil.rmtree(sb, ignore_errors=True)
+    return problems
 
 
 def copilot_env():
@@ -418,8 +467,16 @@ def judge_run(manifest, result, env, model):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True, prepare=None):
+def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True, prepare=None,
+             check_fixture: bool = True):
     manifest = yaml.safe_load((fixture / "manifest.yml").read_text(encoding="utf-8"))
+    if check_fixture:
+        problems = preflight(fixture, manifest)
+        if problems:  # a bad fixture tells us nothing about the agent — report it, spend no agent runs
+            return {"case": manifest["id"], "unit": manifest.get("unit"),
+                    "agent": manifest.get("agent", "main"), "fixture_error": problems,
+                    "summary": {"pass_rate": None, "note": "fixture failed preflight", "problems": problems},
+                    "runs": []}
     env = copilot_env()
     runs = []
     for _ in range(repeats):
@@ -471,8 +528,10 @@ def main(argv=None):
     parser.add_argument("--effort", default=None)
     parser.add_argument("--keep", action="store_true", help="keep the sandbox for inspection")
     parser.add_argument("--no-judge", action="store_true", help="skip the advisory LLM judge")
+    parser.add_argument("--no-preflight", action="store_true", help="skip fixture preflight validation")
     args = parser.parse_args(argv)
-    result = run_case(Path(args.fixture), args.repeats, args.model, args.effort, args.keep, not args.no_judge)
+    result = run_case(Path(args.fixture), args.repeats, args.model, args.effort, args.keep,
+                      not args.no_judge, check_fixture=not args.no_preflight)
     print(json.dumps(result, indent=2))
 
 

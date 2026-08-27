@@ -11,6 +11,7 @@ Run: ``python eval/test_graders.py`` — prints a one-line summary and exits non
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -305,6 +306,62 @@ def summarize_denominator_excludes_absent_checks():
     # present in 1 run, failed in 1 -> 0.0 (old buggy logic diluted to (2-1)/2 = 0.5)
     assert s["per_check_pass_rate"]["containment"] == 0.0, s["per_check_pass_rate"]
     assert s["per_check_pass_rate"]["invocation"] == 1.0
+
+
+# --- H5: a build_cmd that overruns build_timeout fails (never stalls the run) ----------------------
+
+@case
+def build_times_out_and_fails():
+    m = {"id": "t", "agent": "a", "build_cmd": "python -c \"import time; time.sleep(5)\"", "build_timeout": 1}
+    g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(g, "build")["result"] == "fail"
+    assert "timed out" in check(g, "build")["evidence"]
+
+
+# --- H4: fixture preflight validates a fixture before spending agent runs --------------------------
+
+_GOOD_ORG = {"version": 3, "root": "main", "nodes": [
+    {"id": "main", "parent": None, "children": [], "mode": "Leaf",
+     "charter": {"domain": ["**"], "concerns": [], "excludes": []}}]}
+
+
+def _fixture(org, extra_seed=None):
+    d = Path(tempfile.mkdtemp(prefix="fx-"))
+    _DIRS.append(d)
+    seed = d / "seed"
+    seed.mkdir()
+    (seed / "org.json").write_text(json.dumps(org), encoding="utf-8")
+    for rel, content in (extra_seed or {}).items():
+        p = seed / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    return d
+
+
+@case
+def preflight_accepts_valid_fixture():
+    assert run.preflight(_fixture(_GOOD_ORG), {"id": "t", "agent": "main"}) == []
+
+
+@case
+def preflight_rejects_bad_schema_version():
+    probs = run.preflight(_fixture({**_GOOD_ORG, "version": 1}), {"id": "t", "agent": "main"})
+    assert any("schema" in p for p in probs), probs
+
+
+@case
+def preflight_rejects_missing_agent_def():
+    probs = run.preflight(_fixture(_GOOD_ORG), {"id": "t", "agent": "ghost"})
+    assert any("ghost" in p for p in probs), probs
+
+
+@case
+def preflight_rejects_baseline_coverage_gap():
+    org = {"version": 3, "root": "main", "nodes": [
+        {"id": "main", "parent": None, "children": [], "mode": "Leaf",
+         "charter": {"domain": ["sub/**"], "concerns": [], "excludes": []}}]}  # owns sub/** only
+    probs = run.preflight(_fixture(org, {"orphan.txt": "x"}), {"id": "t", "agent": "main"})
+    assert any("coverage" in p for p in probs), probs
 
 
 def _main():
