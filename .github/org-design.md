@@ -147,7 +147,8 @@ only through a single serialized step:
 4. **Integrate & clean up** — one role fast-forwards/merges the worktree branch into `main`, **one at
    a time**, then removes the worktree.
 
-**Invariant:** a node's *execution* writes only inside its worktree; `main` changes only through the
+**Invariant:** every node run *executes* inside its own worktree and writes nowhere else — **always**,
+whether or not a sibling is active; `main` changes only through the
 serialized *integration* step, which is the single writer to `main`. Because coverage gives concurrent
 nodes disjoint domains (hence disjoint files), serialized integration is near-conflict-free; the rare
 seam/exclude overlap is caught by the containment check. This is the hard fix for the "concurrent
@@ -328,7 +329,10 @@ overloaded, a `SplitProposal`.
 
 ## 5. Invariants (never violate)
 
-- **Hardcoded entry** — every request starts by invoking `main`.
+- **Hardcoded entry** — the Host starts every request by invoking `main` (Host → `main`).
+- **Delegation (scatter-gather)** — a Parent routes each subtask to the child whose charter owns it and
+  invokes that child; it never does a child's work itself. Routing within the org is the parent's job,
+  not the Host's. Distinct from the entry invariant above.
 - **Host disposes, nodes propose** — nodes never mutate `org.json`; they only return proposals, and
   the `splitter` writes it on an approved split.
 - **Coverage** — every tracked path → exactly one node's effective domain (`domain` − `excludes`); a
@@ -336,8 +340,9 @@ overloaded, a `SplitProposal`.
 - **Single-writer** — every wiki page / skill / tool owned by exactly one live node.
 - **Seam ownership** — a cross-child seam is an artifact owned by the common parent; it is the source
   of truth, and seam changes are atomic (all sides together, or roll back).
-- **Worktree isolation** — a node's execution writes only in its own `.worktrees/<id>/<run-id>`;
-  `main` changes only via the serialized integration step (the single writer to `main`).
+- **Worktree isolation** — **every** node run executes in its own `.worktrees/<id>/<run-id>` and writes
+  nowhere else (always, not only under concurrency); `main` changes only via the serialized integration
+  step (the single writer to `main`).
 - **Deferred, gated, one-way growth** — splits happen after a task, need human approval, never merge
   back.
 - **Demand-driven bundle** — no wiki/skill/tool created speculatively; none left stale or orphaned.

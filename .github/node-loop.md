@@ -11,8 +11,8 @@ instruction files, so it never reaches the Host.
      (the `task` tool with `agent_type: <child-id>`) and aggregate the results. You **never do a
      child's work yourself** — you write only your own shared set / seams.
    - **Leaf** → execute directly, but **only inside your `domain`** (see the hard rule below).
-3. **Isolate.** Work in your own `.worktrees/<your-id>/<run-id>/` (always safe; required when a
-   sibling may run concurrently).
+3. **Isolate.** Every run, work in your own `.worktrees/<your-id>/<run-id>/` and write nowhere else —
+   **always required**, not only when a sibling may run concurrently.
 4. **Maintain your bundle — only when it pays back** (org-design §3.2–§3.3):
    - **wiki** a page when you derived non-obvious domain knowledge you'll need again, or you changed
      something a page documents (keep `sources`/`updated` current for freshness).
