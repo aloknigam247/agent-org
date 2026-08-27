@@ -173,6 +173,69 @@ def check_containment(org, acting, paths):
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 
+def check_split(old_org, new_org, paths=None):
+    """Validate a single add-children split (design §2.3, §3.6): exactly one former Leaf became a Parent
+    with >= 2 new Leaf children, root and version move correctly, no pre-existing node is
+    reparented/renamed/otherwise changed, and (given the tracked paths) nothing leaves the split subtree.
+    Pure old-vs-new comparison, so a split can be graded without running the splitter agent."""
+    violations = []
+    old_by = {n["id"]: n for n in old_org.get("nodes", [])}
+    new_by = {n["id"]: n for n in new_org.get("nodes", [])}
+
+    def add(evidence, node=None):
+        item = {"rule": "split", "evidence": evidence}
+        if node:
+            item["node"] = node
+        violations.append(item)
+
+    if old_org.get("root") != new_org.get("root"):
+        add(f"root changed: {old_org.get('root')} -> {new_org.get('root')}")
+    if new_org.get("version") != (old_org.get("version", 0) + 1):
+        add(f"version must bump by exactly 1: {old_org.get('version')} -> {new_org.get('version')}")
+
+    removed = [nid for nid in old_by if nid not in new_by]
+    if removed:
+        add(f"pre-existing nodes removed (no reparent/rename in a split): {sorted(removed)}")
+    added = [nid for nid in new_by if nid not in old_by]
+
+    targets = [nid for nid in new_by if nid in old_by
+               and old_by[nid].get("mode") == "Leaf" and new_by[nid].get("mode") == "Parent"]
+    if len(targets) != 1:
+        add(f"a split turns exactly one Leaf into a Parent, found {sorted(targets)}")
+        return {"status": "ok" if not violations else "violations", "violations": violations}
+    target = targets[0]
+
+    if len(added) < 2:
+        add(f"a split adds >= 2 new children, found {len(added)}")
+    for nid in added:
+        if new_by[nid].get("mode") != "Leaf":
+            add("new child must be a Leaf", nid)
+        if new_by[nid].get("parent") != target:
+            add(f"new child's parent must be the split target {target}", nid)
+    if set(new_by[target].get("children") or []) != set(added):
+        add(f"target children {sorted(new_by[target].get('children') or [])} != added {sorted(added)}", target)
+
+    for nid, old_n in old_by.items():  # every pre-existing non-target node must be untouched
+        if nid == target or nid not in new_by:
+            continue
+        for field in ("charter", "parent", "children", "mode"):
+            if old_n.get(field) != new_by[nid].get(field):
+                add(f"unrelated node changed field {field!r}", nid)
+
+    if paths is not None:  # nothing may leave the split subtree; owners outside it are unchanged
+        old_c, new_c = compile_nodes(old_org.get("nodes", [])), compile_nodes(new_org.get("nodes", []))
+        allowed_new = {target, *added}
+        for path in paths:
+            oo, no = owners_of(old_c, path), owners_of(new_c, path)
+            o1 = oo[0] if len(oo) == 1 else None
+            if o1 == target:
+                if not (len(no) == 1 and no[0] in allowed_new):
+                    add(f"path {normalize(path)} left the split subtree: {oo} -> {no}", target)
+            elif no != oo:
+                add(f"path {normalize(path)} changed owner outside the split: {oo} -> {no}")
+    return {"status": "ok" if not violations else "violations", "violations": violations}
+
+
 def git_tracked(root):
     """Tracked plus untracked-non-ignored files (forward-slash), so a just-created unowned file is
     caught rather than silently missed (design §2.7)."""
@@ -217,6 +280,8 @@ def main(argv=None):
     parser.add_argument("--owner", help="print the owner of a single path and exit")
     parser.add_argument("--acting", help="integration-gate containment: assert changed paths are owned by this node id")
     parser.add_argument("--size", help="split self-check: report the domain-size proxy for this node id")
+    parser.add_argument("--split-baseline",
+                        help="validate a split: compare this old org.json against --org (the new tree)")
     parser.add_argument("--window", type=int, default=200000, help="context window in tokens (default 200000)")
     parser.add_argument("--threshold", type=float, default=0.60, help="split fraction of the window (default 0.60)")
     args = parser.parse_args(argv)
@@ -228,6 +293,16 @@ def main(argv=None):
         owner = hits[0] if len(hits) == 1 else None
         print(json.dumps({"path": normalize(args.owner), "owner": owner, "matches": hits}))
         return 0 if owner else 1
+
+    if args.split_baseline:
+        old = json.loads(Path(args.split_baseline).read_text(encoding="utf-8"))
+        try:
+            paths = [normalize(p) for p in args.paths] if args.paths else git_tracked(args.root)
+        except Exception:
+            paths = None
+        result = check_split(old, org, paths)
+        print(json.dumps(result, indent=2))
+        return 0 if result["status"] == "ok" else 1
 
     if args.acting:
         node_ids = {n["id"] for n in org["nodes"]}

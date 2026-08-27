@@ -321,6 +321,87 @@ def cli_owner_exit_codes():
     assert unowned.returncode == 1, unowned.stdout  # a path no node owns exits non-zero
 
 
+# --- split-transition validator (design §2.3, §3.6) -------------------------------------------------
+
+def _root_split():
+    old = org("main", [node("main", ["**"], parent=None, mode="Leaf")])
+    old["version"] = 3
+    new = {"version": 4, "root": "main", "nodes": [
+        node("main", ["root.txt"], parent=None, children=["a", "b"], mode="Parent"),
+        node("a", ["a/**"], parent="main", mode="Leaf"),
+        node("b", ["b/**"], parent="main", mode="Leaf")]}
+    return old, new
+
+
+@case
+def split_valid_root_split():
+    old, new = _root_split()
+    r = ov.check_split(old, new, ["a/x", "b/y", "root.txt"])
+    assert r["status"] == "ok", r
+
+
+@case
+def split_valid_second_generation():
+    old = {"version": 3, "root": "root", "nodes": [
+        node("root", ["shared/**"], parent=None, children=["a", "b"], mode="Parent"),
+        node("a", ["a/**"], parent="root", mode="Leaf"),
+        node("b", ["b/**"], parent="root", mode="Leaf")]}
+    new = {"version": 4, "root": "root", "nodes": [
+        node("root", ["shared/**"], parent=None, children=["a", "b"], mode="Parent"),
+        node("a", ["a/base/**"], parent="root", children=["a1", "a2"], mode="Parent"),
+        node("a1", ["a/one/**"], parent="a", mode="Leaf"),
+        node("a2", ["a/two/**"], parent="a", mode="Leaf"),
+        node("b", ["b/**"], parent="root", mode="Leaf")]}
+    r = ov.check_split(old, new, ["a/one/x", "a/two/y", "a/base/z", "b/w", "shared/s"])
+    assert r["status"] == "ok", r
+
+
+@case
+def split_rejects_wrong_version():
+    old, new = _root_split()
+    new["version"] = 5  # must be old + 1
+    r = ov.check_split(old, new)
+    assert any("version must bump" in v["evidence"] for v in r["violations"]), r
+
+
+@case
+def split_rejects_root_change():
+    old, new = _root_split()
+    new["root"] = "a"
+    r = ov.check_split(old, new)
+    assert any("root changed" in v["evidence"] for v in r["violations"]), r
+
+
+@case
+def split_rejects_removed_node():
+    old = {"version": 3, "root": "root", "nodes": [
+        node("root", ["shared/**"], parent=None, children=["a", "b"], mode="Parent"),
+        node("a", ["a/**"], parent="root", mode="Leaf"),
+        node("b", ["b/**"], parent="root", mode="Leaf")]}
+    new = {"version": 4, "root": "root", "nodes": [  # split a, but illegally drop b
+        node("root", ["shared/**"], parent=None, children=["a"], mode="Parent"),
+        node("a", ["a/**"], parent="root", children=["a1", "a2"], mode="Parent"),
+        node("a1", ["a/one/**"], parent="a", mode="Leaf"),
+        node("a2", ["a/two/**"], parent="a", mode="Leaf")]}
+    r = ov.check_split(old, new)
+    assert any("removed" in v["evidence"] for v in r["violations"]), r
+
+
+@case
+def split_rejects_non_leaf_child():
+    old, new = _root_split()
+    new["nodes"][1]["mode"] = "Parent"  # child 'a' must be a Leaf
+    r = ov.check_split(old, new)
+    assert any("must be a Leaf" in v["evidence"] for v in r["violations"]), r
+
+
+@case
+def split_rejects_path_leaving_subtree():
+    old, new = _root_split()  # new main domain is only root.txt; a/**, b/** cover the rest
+    r = ov.check_split(old, new, ["a/x", "b/y", "orphan.txt"])  # orphan matches nothing new
+    assert any("left the split subtree" in v["evidence"] for v in r["violations"]), r
+
+
 def run():
     failed = 0
     try:
