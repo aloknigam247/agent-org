@@ -65,6 +65,7 @@ def build_sandbox(fixture: Path, dest: Path):
     sh(["git", "config", "core.hooksPath", str(dest / ".git" / "hooks")], cwd=dest)
     sh(["git", "add", "-A"], cwd=dest)
     sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval", "commit", "-q", "--no-verify", "-m", "chore: seed"], cwd=dest)
+    return sh(["git", "rev-parse", "HEAD"], cwd=dest).stdout.strip()
 
 
 def copilot_env():
@@ -221,13 +222,41 @@ def invoke(manifest, sandbox: Path, env, model, effort, timeout):
     }
 
 
-def capture(sandbox: Path):
-    status = sh(["git", "status", "--porcelain", "--untracked-files=all"], cwd=sandbox).stdout
-    changed = [line[3:] for line in status.splitlines() if line.strip()]
+def _parse_name_status_z(text):
+    """Parse `git diff --name-status -z` into [(status, path)], expanding rename/copy to both sides."""
+    toks = text.split("\0")
+    out, i = [], 0
+    while i < len(toks):
+        s = toks[i]
+        if not s:
+            i += 1
+            continue
+        code = s[0]
+        if code in ("R", "C") and i + 2 < len(toks):
+            out.append((code, ov.normalize(toks[i + 1])))  # source
+            out.append((code, ov.normalize(toks[i + 2])))  # destination
+            i += 3
+        elif i + 1 < len(toks):
+            out.append((code, ov.normalize(toks[i + 1])))
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+def capture(sandbox: Path, baseline_sha):
+    """The complete baseline→final change set: committed + staged + unstaged + untracked, rename/NUL-safe.
+    The sandbox is disposable and the agent has already run, so staging everything to fold untracked files
+    into a single diff against the baseline is safe."""
+    sh(["git", "add", "-A"], cwd=sandbox)
+    diff = sh(["git", "diff", "--cached", "--name-status", "-z", "--find-renames", baseline_sha],
+              cwd=sandbox).stdout
+    changed = _parse_name_status_z(diff)
     commits = sh(["git", "rev-list", "--count", "HEAD"], cwd=sandbox).stdout.strip()
     new_commits = (int(commits) - 1) if commits.isdigit() else 0
-    worktrees = (sandbox / ".worktrees").exists()
-    return {"changed_paths": changed, "new_commits": new_commits, "made_worktree": worktrees}
+    return {"changed_paths": sorted({p for _, p in changed}),
+            "new_commits": new_commits,
+            "made_worktree": (sandbox / ".worktrees").exists()}
 
 
 def mark_runaway(result, manifest):
@@ -392,16 +421,27 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
     for _ in range(repeats):
         sandbox = Path(tempfile.mkdtemp(prefix=f"eval-{manifest['id']}-"))
         try:
-            build_sandbox(fixture, sandbox)
+            baseline_sha = build_sandbox(fixture, sandbox)
             if prepare:
                 prepare(sandbox)  # e.g. strip the node's bundle for a payback cold arm
+                # fold the prepared state into the baseline so it is not counted as the agent's change
+                sh(["git", "add", "-A"], cwd=sandbox)
+                sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval",
+                    "commit", "-q", "--no-verify", "--amend", "-m", "chore: seed"], cwd=sandbox)
+                baseline_sha = sh(["git", "rev-parse", "HEAD"], cwd=sandbox).stdout.strip()
             result = invoke(manifest, sandbox, env, model, effort, manifest.get("timeout", 300))
-            result.update(capture(sandbox))
-            org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
-            result["grade"] = graders.grade(manifest, org, result["changed_paths"], sandbox,
-                                             result["response"], result["exit"], result["timed_out"])
+            result.update(capture(sandbox, baseline_sha))
+            # attribute the agent's edits with the immutable seed org (H3); validate the final org separately
+            baseline_org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+            try:
+                final_org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
+            except Exception:
+                final_org = None  # broken/deleted → coverage fails (H9), never crashes the run
+            result["grade"] = graders.grade(manifest, baseline_org, result["changed_paths"], sandbox,
+                                             result["response"], result["exit"], result["timed_out"],
+                                             final_org=final_org)
             mark_runaway(result, manifest)
-            add_calibration(result, org, sandbox, manifest.get("agent", "main"))
+            add_calibration(result, baseline_org, sandbox, manifest.get("agent", "main"))
             result["trajectory_analysis"] = analyze_trajectory(result.get("trajectory", []))
             if judge:
                 verdict = judge_run(manifest, result, env, model)

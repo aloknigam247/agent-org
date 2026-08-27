@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
+import run  # noqa: E402
 
 CASES = []
 _DIRS = []
@@ -31,6 +32,15 @@ def case(fn):
 
 def _sh(args, cwd):
     subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+
+
+def _sha(cwd):
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True).stdout.strip()
+
+
+def _commit(cwd, msg):
+    _sh(["git", "add", "-A"], cwd)
+    _sh(["git", "-c", "user.email=t@local", "-c", "user.name=t", "commit", "-q", "--no-verify", "-m", msg], cwd)
 
 
 def sandbox(files):
@@ -179,7 +189,60 @@ def containment_skipped_for_parent():
     assert g["passed"] is True
 
 
-def run():
+# --- H3: attribution uses the immutable baseline org, not one the agent rewrote --------------------
+
+@case
+def grades_against_baseline_not_rewritten_org():
+    # the agent touched a foreign path AND rewrote org.json to "own" everything; attribution must
+    # still use the baseline ORG (a owns region_a only), so routing and containment fail.
+    rewritten = {"version": 1, "root": "a",
+                 "nodes": [{"id": "a", "charter": {"domain": ["**"]}, "parent": None,
+                            "children": [], "mode": "Leaf"}]}
+    m = {"id": "t", "agent": "a", "expected_owner": ["a"]}
+    g = graders.grade(m, ORG, ["misc/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False,
+                      final_org=rewritten)
+    assert check(g, "routing")["result"] == "fail"       # misc/* -> b under baseline, not a
+    assert check(g, "containment")["result"] == "fail"
+    assert check(g, "coverage")["result"] == "pass"      # coverage validated on the (valid) final org
+    assert g["passed"] is False
+
+
+# --- H9: a missing/unparseable final org fails coverage, never crashes -----------------------------
+
+@case
+def broken_final_org_fails_coverage():
+    m = {"id": "t", "agent": "a"}
+    g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False, final_org=None)
+    assert check(g, "coverage")["result"] == "fail"
+    assert g["passed"] is False
+
+
+# --- H1: capture() sees committed + untracked + renames (not just working-tree status) -------------
+
+@case
+def capture_sees_committed_change():
+    d = sandbox({"a.txt": "1"})
+    base = _sha(d)
+    (d / "b.txt").write_text("2", encoding="utf-8")
+    _commit(d, "add b")  # committed AFTER baseline — invisible to a bare `git status`
+    cap = run.capture(d, base)
+    assert "b.txt" in cap["changed_paths"], cap
+    assert cap["new_commits"] == 1, cap
+
+
+@case
+def capture_sees_untracked_and_rename():
+    d = sandbox({"orig.txt": "hello world payload"})
+    base = _sha(d)
+    (d / "untracked.txt").write_text("u", encoding="utf-8")   # never staged
+    _sh(["git", "mv", "orig.txt", "renamed.txt"], d)          # staged rename (identical content)
+    cap = run.capture(d, base)
+    assert "untracked.txt" in cap["changed_paths"], cap
+    assert "renamed.txt" in cap["changed_paths"], cap         # rename destination present
+    assert "orig.txt" in cap["changed_paths"], cap            # and its source side
+
+
+def _main():
     failed = 0
     try:
         for fn in CASES:
@@ -199,4 +262,4 @@ def run():
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(_main())

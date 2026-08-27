@@ -24,9 +24,17 @@ def _match_any(globs, path):
     return bool(globs) and ov._match(ov._spec(globs), ov.normalize(path))
 
 
-def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed_out=False):
+_UNCHANGED = object()
+
+
+def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed_out=False,
+          final_org=_UNCHANGED):
+    """Grade a run. Ownership is attributed with the immutable baseline `org` the agent was given
+    (routing/containment), while coverage validates the run's `final_org` (the post-run tree). A
+    missing/unparseable final org (final_org is None) fails coverage rather than crashing."""
     checks = []
     compiled = ov.compile_nodes(org.get("nodes", []))
+    final = org if final_org is _UNCHANGED else final_org
 
     # invocation health — a crashed or timed-out run never passes, however green the rest looks vacuously
     live = exit_code == 0 and not timed_out
@@ -57,10 +65,14 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
         checks.append({"check": "paths", "result": "pass" if ok else "fail",
                        "evidence": f"outside_allowed={outside} in_forbidden={inside_forbidden}"})
 
-    # coverage — the repo is still fully and singly owned after the change
-    cov = ov.validate(org, ov.git_tracked(sandbox))
-    checks.append({"check": "coverage", "result": "pass" if cov["status"] == "ok" else "fail",
-                   "evidence": cov["violations"][:5]})
+    # coverage — the repo is still fully and singly owned after the change (validated on the FINAL org)
+    if final is None:
+        checks.append({"check": "coverage", "result": "fail",
+                       "evidence": "final org.json missing or unparseable"})
+    else:
+        cov = ov.validate(final, ov.git_tracked(sandbox))
+        checks.append({"check": "coverage", "result": "pass" if cov["status"] == "ok" else "fail",
+                       "evidence": cov["violations"][:5]})
 
     # containment — a leaf must keep every change in its own domain; a parent legitimately routes across
     # its subtree, so routing/paths/coverage validate it instead (a single-owner check would false-fail).
