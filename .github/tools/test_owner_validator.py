@@ -12,18 +12,41 @@ any case fails.
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import owner_validator as ov  # noqa: E402
 
+TOOL = Path(__file__).resolve().parent / "owner_validator.py"
 CASES = []
+_DIRS = []
 
 
 def case(fn):
     CASES.append(fn)
     return fn
+
+
+def git_repo(files, org_dict):
+    """A hermetic git repo with `files` (rel->content) plus org.json, committed — for git_tracked /
+    domain_size / CLI tests."""
+    d = Path(tempfile.mkdtemp(prefix="ovt-"))
+    _DIRS.append(d)
+    (d / "org.json").write_text(json.dumps(org_dict), encoding="utf-8")
+    for rel, content in files.items():
+        p = d / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    for args in (["init", "-q", "-b", "main"], ["config", "core.autocrlf", "false"],
+                 ["config", "core.hooksPath", str(d / ".git" / "hooks")], ["add", "-A"],
+                 ["-c", "user.email=t@local", "-c", "user.name=t", "commit", "-q", "--no-verify", "-m", "seed"]):
+        subprocess.run(["git", *args], cwd=d, capture_output=True, text=True)
+    return d
 
 
 def node(nid, domain=None, excludes=None, parent=None, children=None, mode=None):
@@ -119,10 +142,20 @@ def coverage_partition_is_clean():
 
 @case
 def tree_valid_parent_with_two_leaves():
-    o = org("root", [node("root", ["**"], parent=None, children=["c1", "c2"], mode="Parent"),
+    o = org("root", [node("root", ["shared/**"], parent=None, children=["c1", "c2"], mode="Parent"),
                      node("c1", ["one/**"], parent="root", mode="Leaf"),
                      node("c2", ["two/**"], parent="root", mode="Leaf")])
     assert ov.check_tree(o) == []
+
+
+@case
+def tree_rejects_parent_globstar_domain():
+    # a Parent's domain must be an explicit shared set, never ** (design §2.2)
+    o = org("root", [node("root", ["**"], parent=None, children=["c1", "c2"], mode="Parent"),
+                     node("c1", ["one/**"], parent="root", mode="Leaf"),
+                     node("c2", ["two/**"], parent="root", mode="Leaf")])
+    ev = [x["evidence"] for x in ov.check_tree(o)]
+    assert any("Parent domain is **" in e for e in ev), ev
 
 
 @case
@@ -211,17 +244,98 @@ def normalize_backslashes_and_dot_prefix():
     assert ov.normalize("././z") == "z"
 
 
+# --- glob boundary cases (gitignore dialect via pathspec) -------------------------------------------
+
+@case
+def glob_slashless_matches_any_depth_but_anchored_does_not():
+    o = org("r", [node("a", ["Makefile"], mode="Leaf"),
+                  node("b", ["**"], excludes=["Makefile"], mode="Leaf")])
+    assert owners(o, "Makefile") == ["a"]
+    assert owners(o, "sub/Makefile") == ["a"]        # slashless matches at any depth
+    anchored = org("r", [node("a", ["/Makefile"], mode="Leaf"),
+                         node("b", ["**"], excludes=["/Makefile"], mode="Leaf")])
+    assert owners(anchored, "sub/Makefile") == ["b"]  # a leading slash anchors to the root
+
+
+@case
+def glob_trailing_slash_matches_directory_contents():
+    o = org("r", [node("a", ["build/"], mode="Leaf"),
+                  node("b", ["**"], excludes=["build/"], mode="Leaf")])
+    assert owners(o, "build/out.o") == ["a"]
+
+
+@case
+def glob_character_class():
+    o = org("r", [node("a", ["**/*.[ch]"], mode="Leaf"),
+                  node("b", ["**"], excludes=["**/*.[ch]"], mode="Leaf")])
+    assert owners(o, "src/main.c") == ["a"]
+    assert owners(o, "src/main.h") == ["a"]
+    assert owners(o, "src/main.py") == ["b"]
+
+
+@case
+def exclude_not_recovered_is_unowned():
+    o = org("r", [node("a", ["src/**"], excludes=["src/gen/**"], mode="Leaf")])  # nobody re-covers src/gen
+    v = ov.check_coverage(o, ["src/x", "src/gen/y"])
+    assert [(x["path"], x["rule"]) for x in v] == [("src/gen/y", "uncovered")], v
+
+
+@case
+def tree_rejects_parent_missing_child_backref():
+    # c2 claims root as parent, but root.children omits it (a reverse back-reference gap)
+    o = org("root", [node("root", ["shared/**"], parent=None, children=["c1", "c2"], mode="Parent"),
+                     node("c1", ["a/**"], parent="root", mode="Leaf"),
+                     node("c2", ["b/**"], parent="c1", mode="Leaf")])  # c2's parent is c1, not root
+    ev = [x["evidence"] for x in ov.check_tree(o)]
+    assert any("does not list it as a child" in e for e in ev), ev
+
+
+# --- git-backed: domain_size (split-trigger proxy) and CLI contracts --------------------------------
+
+_AB = {"version": 3, "root": "b", "nodes": [
+    {"id": "a", "charter": {"domain": ["a/**"]}, "parent": "b", "children": [], "mode": "Leaf"},
+    {"id": "b", "charter": {"domain": ["**"], "excludes": ["a/**"]}, "parent": None,
+     "children": ["a", "c"], "mode": "Parent"},
+    {"id": "c", "charter": {"domain": ["c/**"]}, "parent": "b", "children": [], "mode": "Leaf"}]}
+
+
+@case
+def domain_size_counts_only_owned_bytes():
+    repo = git_repo({"a/x.txt": "12345", "c/y.txt": "123"}, _AB)  # a owns 5 bytes, c owns 3
+    m = ov.domain_size(_AB, "a", repo)
+    assert m["files"] == 1 and m["bytes"] == 5, m
+    assert m["est_tokens"] == 1, m  # 5 // 4
+
+
+@case
+def cli_owner_exit_codes():
+    org_one = {"version": 3, "root": "main", "nodes": [
+        {"id": "main", "charter": {"domain": ["a/**"]}, "parent": None, "children": [], "mode": "Leaf"}]}
+    repo = git_repo({"a/x.txt": "1"}, org_one)
+    org_path = str(repo / "org.json")
+    owned = subprocess.run([sys.executable, str(TOOL), "--owner", "a/x.txt", "--org", org_path],
+                           capture_output=True, text=True)
+    assert owned.returncode == 0, owned.stderr
+    unowned = subprocess.run([sys.executable, str(TOOL), "--owner", "top.txt", "--org", org_path],
+                             capture_output=True, text=True)
+    assert unowned.returncode == 1, unowned.stdout  # a path no node owns exits non-zero
+
+
 def run():
     failed = 0
-    for fn in CASES:
-        try:
-            fn()
-        except AssertionError as exc:
-            failed += 1
-            print(f"FAIL {fn.__name__}: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
+    try:
+        for fn in CASES:
+            try:
+                fn()
+            except AssertionError as exc:
+                failed += 1
+                print(f"FAIL {fn.__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
+    finally:
+        for d in _DIRS:
+            shutil.rmtree(d, ignore_errors=True)
     print(f"{len(CASES) - failed}/{len(CASES)} passed")
     return 1 if failed else 0
 

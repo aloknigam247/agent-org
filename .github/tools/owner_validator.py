@@ -111,6 +111,9 @@ def check_tree(org):
         parent = node.get("parent")
         if parent is not None and parent not in by_id:
             violations.append({"rule": "tree", "node": nid, "evidence": f"unknown parent {parent}"})
+        elif parent is not None and nid not in (by_id[parent].get("children") or []):
+            violations.append({"rule": "tree", "node": nid,
+                               "evidence": f"parent {parent} does not list it as a child"})
         for child in kids:
             if child not in by_id:
                 violations.append({"rule": "tree", "node": nid, "evidence": f"unknown child {child}"})
@@ -120,6 +123,9 @@ def check_tree(org):
             violations.append({"rule": "tree", "node": nid, "evidence": "Leaf has children"})
         if node.get("mode") == "Parent" and len(kids) < 2:
             violations.append({"rule": "tree", "node": nid, "evidence": "Parent has fewer than 2 children"})
+        if node.get("mode") == "Parent" and "**" in (node.get("charter", {}).get("domain") or []):
+            violations.append({"rule": "tree", "node": nid,
+                               "evidence": "Parent domain is ** (must be an explicit shared set, §2.2)"})
 
     for node in nodes:  # acyclicity via the parent chain
         seen = set()
