@@ -101,6 +101,7 @@ the grading backbone:
 ```pwsh
 python .github/tools/test_owner_validator.py   # oracle: glob, coverage, tree, containment, --size, split
 python .github/tools/test_bundle_validator.py  # bundle integrity: SO2 presence, single-writer, orphans
+python .github/tools/test_worktree.py          # worktree lifecycle: isolation, serialized integration
 python eval/test_graders.py                    # grade() + harness: capture, fail-closed, preflight
 ```
 
