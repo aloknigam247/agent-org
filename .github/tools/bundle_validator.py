@@ -90,8 +90,30 @@ def check_bundle(org, root) -> dict:
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="agentOrg bundle-integrity validator (SO2-SO6)")
+def check_freshness(root, changed_paths) -> dict:
+    """SO5 (freshness): if a run changed a file that a bundle artifact lists as a `source`, the artifact
+    must be re-touched in the same run. `checked` counts artifacts with a non-empty sources list (so a
+    caller can tell whether the check applied at all)."""
+    root = Path(root)
+    changed = {str(p).replace("\\", "/") for p in changed_paths}
+    violations, checked = [], 0
+    for kind in BUNDLE_KINDS:
+        base = root / kind
+        if not base.exists():
+            continue
+        for f in sorted(base.rglob("*.md")):
+            if not f.is_file():
+                continue
+            sources = _front_matter(f.read_text(encoding="utf-8", errors="replace")).get("sources") or []
+            if not sources:
+                continue
+            checked += 1
+            rel = f.relative_to(root).as_posix()
+            changed_sources = [s for s in sources if s.replace("\\", "/") in changed]
+            if changed_sources and rel not in changed:
+                violations.append({"rule": "freshness", "path": rel,
+                                   "evidence": f"sources changed {changed_sources} but not re-touched"})
+    return {"status": "ok" if not violations else "violations", "violations": violations, "checked": checked}
     parser.add_argument("--org", default="org.json", help="path to org.json")
     parser.add_argument("--root", default=".", help="repo root")
     args = parser.parse_args(argv)

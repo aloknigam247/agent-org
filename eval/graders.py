@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".github" / "tools"))
 import owner_validator as ov  # noqa: E402
+import bundle_validator as bv  # noqa: E402
 
 
 def _match_any(globs, path):
@@ -105,6 +106,13 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
         con = ov.check_containment(org, acting, changed_paths)
         checks.append({"check": "containment", "result": "pass" if con["status"] == "ok" else "fail",
                        "evidence": con["violations"][:5]})
+
+    # freshness (SO5) — if the run changed a file a bundle artifact cites as a source, it must re-touch
+    # the artifact. Only appended when such an artifact exists (applicable), so it stays out of the way.
+    fresh = bv.check_freshness(sandbox, changed_paths)
+    if fresh.get("checked"):
+        checks.append({"check": "freshness", "result": "pass" if fresh["status"] == "ok" else "fail",
+                       "evidence": fresh["violations"][:5]})
 
     # build/tests — optional objective outcome (timeout-bounded so a hung build fails, not stalls)
     build_cmd = manifest.get("build_cmd")

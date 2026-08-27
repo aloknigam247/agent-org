@@ -92,6 +92,31 @@ def dangling_source_fails():
     assert any("dangling source" in e for e in evidences(r)), r
 
 
+# --- SO5 freshness: a source changed but the artifact citing it was not re-touched ------------------
+
+@case
+def freshness_stale_when_source_changed_not_retouched():
+    d = repo({"wiki/a/notes.md": "---\nowner: a\nsources: [a/x.py]\n---\nnotes", "a/x.py": "y"})
+    r = bv.check_freshness(d, ["a/x.py"])  # source changed, notes.md not touched
+    assert r["status"] == "violations"
+    assert any("not re-touched" in e for e in evidences(r)), r
+
+
+@case
+def freshness_ok_when_retouched_together():
+    d = repo({"wiki/a/notes.md": "---\nowner: a\nsources: [a/x.py]\n---\nnotes", "a/x.py": "y"})
+    r = bv.check_freshness(d, ["a/x.py", "wiki/a/notes.md"])  # both changed in the same run
+    assert r["status"] == "ok", r
+    assert r["checked"] == 1
+
+
+@case
+def freshness_ok_when_source_unchanged():
+    d = repo({"wiki/a/notes.md": "---\nowner: a\nsources: [a/x.py]\n---\nnotes", "a/x.py": "y"})
+    r = bv.check_freshness(d, ["b/unrelated.py"])  # nothing the artifact depends on changed
+    assert r["status"] == "ok", r
+
+
 def _main():
     failed = 0
     try:
