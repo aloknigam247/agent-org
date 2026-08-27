@@ -43,17 +43,40 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
 
     # routing — the node that owns each changed path vs the manifest's human label
     expected = set(manifest.get("expected_owner") or [])
-    acted, unowned = set(), []
+    acted, unowned, overlapped = set(), [], []
     for path in changed_paths:
         hits = ov.owners_of(compiled, path)
         if len(hits) == 1:
             acted.add(hits[0])
         elif not hits:
             unowned.append(ov.normalize(path))
+        else:
+            overlapped.append(ov.normalize(path))  # >1 owner is a coverage break, never a routing pass
     if expected:
-        ok = acted.issubset(expected) and not unowned
+        ok = acted.issubset(expected) and not unowned and not overlapped
         checks.append({"check": "routing", "result": "pass" if ok else "fail",
-                       "evidence": f"acted={sorted(acted)} expected={sorted(expected)} unowned={unowned}"})
+                       "evidence": f"acted={sorted(acted)} expected={sorted(expected)} "
+                                   f"unowned={unowned} overlap={overlapped}"})
+
+    # effect — fail closed on a no-op: a run that was supposed to change something but didn't (or the
+    # reverse, a refuse/reject case that must change nothing) never passes vacuously.
+    required_paths = manifest.get("required_paths") or []
+    required_owners = set(manifest.get("required_touched_owners") or [])
+    no_changes = manifest.get("expected_no_changes")
+    if required_paths or required_owners or no_changes is not None:
+        problems = []
+        if no_changes is True and changed_paths:
+            problems.append(f"expected no changes but {len(changed_paths)} occurred")
+        if no_changes is False and not changed_paths:
+            problems.append("expected a change but none occurred")
+        unmet = [g for g in required_paths if not any(_match_any([g], p) for p in changed_paths)]
+        if unmet:
+            problems.append(f"required_paths unmet={unmet}")
+        missing_owners = sorted(required_owners - acted)
+        if missing_owners:
+            problems.append(f"required_touched_owners missing={missing_owners}")
+        checks.append({"check": "effect", "result": "pass" if not problems else "fail",
+                       "evidence": "; ".join(problems) or "ok"})
 
     # paths — changes stay inside allowed regions and out of forbidden ones (regions, not exact diff)
     allowed = manifest.get("allowed_paths") or []

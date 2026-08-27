@@ -306,15 +306,19 @@ def summarize(runs):
     names = sorted({c["check"] for r in valid for c in r["grade"]["checks"]})
     per_check, fail_modes = {}, {}
     for name in names:
-        fails, sample = 0, None
+        present, fails, sample = 0, 0, None
         for r in valid:
-            for c in r["grade"]["checks"]:
-                if c["check"] == name and c["result"] == "fail":
-                    fails += 1
-                    sample = sample or c["evidence"]
-        per_check[name] = round((m - fails) / m, 3)
+            cs = [c for c in r["grade"]["checks"] if c["check"] == name]
+            if not cs:
+                continue  # a check absent from a run must not count as a pass (H6)
+            present += 1
+            failed = [c for c in cs if c["result"] == "fail"]
+            if failed:
+                fails += 1
+                sample = sample or failed[0]["evidence"]
+        per_check[name] = round((present - fails) / present, 3) if present else None
         if fails:
-            fail_modes[name] = {"failed": fails, "sample": sample}
+            fail_modes[name] = {"failed": fails, "of": present, "sample": sample}
     runaway = sum(1 for r in valid if r.get("runaway"))
     if runaway:
         fail_modes["runaway"] = {"failed": runaway,

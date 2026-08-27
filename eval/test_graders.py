@@ -242,6 +242,71 @@ def capture_sees_untracked_and_rename():
     assert "orig.txt" in cap["changed_paths"], cap            # and its source side
 
 
+# --- H7: an overlapped (multi-owner) changed path fails routing, never passes silently -------------
+
+@case
+def routing_fails_on_overlap():
+    org2 = {"version": 1, "root": "root", "nodes": [
+        {"id": "root", "charter": {"domain": ["shared/**"]}, "parent": None, "children": ["a", "b"], "mode": "Parent"},
+        {"id": "a", "charter": {"domain": ["dup/**"]}, "parent": "root", "children": [], "mode": "Leaf"},
+        {"id": "b", "charter": {"domain": ["dup/**"]}, "parent": "root", "children": [], "mode": "Leaf"}]}
+    m = {"id": "t", "agent": "root", "expected_owner": ["a"]}
+    g = graders.grade(m, org2, ["dup/x.txt"], sandbox({"shared/i": "x", "dup/x.txt": "y"}),
+                      "ok", exit_code=0, timed_out=False)
+    assert check(g, "routing")["result"] == "fail"  # dup/x.txt has two owners -> overlap
+
+
+# --- H2: fail closed on a no-op via effect (required_paths / required_touched_owners / no_changes) --
+
+@case
+def effect_fails_on_noop_when_change_required():
+    m = {"id": "t", "agent": "a", "required_paths": ["region_a/**"]}
+    g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)  # nothing changed
+    assert check(g, "effect")["result"] == "fail"
+    assert g["passed"] is False
+
+
+@case
+def effect_passes_when_required_path_changed():
+    m = {"id": "t", "agent": "a", "required_paths": ["region_a/**"]}
+    g = graders.grade(m, ORG, ["region_a/new.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(g, "effect")["result"] == "pass"
+
+
+@case
+def effect_expected_no_changes_reject_case():
+    m = {"id": "t", "agent": "a", "expected_no_changes": True}
+    ok = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(ok, "effect")["result"] == "pass"           # a reject/refuse case that changed nothing
+    bad = graders.grade(m, ORG, ["region_a/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(bad, "effect")["result"] == "fail"          # but it did change something
+
+
+@case
+def effect_required_owner_missing_fails():
+    m = {"id": "t", "agent": "root", "required_touched_owners": ["a"]}
+    g = graders.grade(m, ORG, ["shared/x"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
+    assert check(g, "effect")["result"] == "fail"            # touched root, not the required owner a
+
+
+# --- H6: per-check rate denominator counts only runs where the check is present --------------------
+
+@case
+def summarize_denominator_excludes_absent_checks():
+    def mk(checks, passed):
+        return {"grade": {"passed": passed, "checks": checks},
+                "usage": {"totalPremiumRequestCost": 0.1}, "duration_s": 10,
+                "trajectory_analysis": {"tool_calls": 1, "delegated_to": [], "ran_oracle": False,
+                                        "committed": False, "oracle_before_commit": True, "looped_tools": []}}
+    r1 = mk([{"check": "invocation", "result": "pass", "evidence": ""},
+             {"check": "containment", "result": "fail", "evidence": "x"}], False)  # containment present & fails
+    r2 = mk([{"check": "invocation", "result": "pass", "evidence": ""}], True)     # containment absent
+    s = run.summarize([r1, r2])
+    # present in 1 run, failed in 1 -> 0.0 (old buggy logic diluted to (2-1)/2 = 0.5)
+    assert s["per_check_pass_rate"]["containment"] == 0.0, s["per_check_pass_rate"]
+    assert s["per_check_pass_rate"]["invocation"] == 1.0
+
+
 def _main():
     failed = 0
     try:
