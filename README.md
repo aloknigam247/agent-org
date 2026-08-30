@@ -4,7 +4,8 @@
 tree of GitHub Copilot CLI custom agents that partition the repo, do the work, and maintain their own
 knowledge and automation.
 
-This repository is the **kernel**: the design plus the seed bootstrap you drop into a target repo.
+This repository packages the kernel as an installable **GitHub Copilot CLI plugin** (under `plugin/`),
+plus the eval harness that tests it. Install the plugin, then bootstrap any git repo to adopt it.
 
 ## The two properties that define "ownership"
 
@@ -16,35 +17,56 @@ This repository is the **kernel**: the design plus the seed bootstrap you drop i
 
 These properties are upheld **intrinsically**: the `splitter` preserves coverage on every atomic
 split, and nodes uphold self-sufficiency by discipline (the payback rule, single-writer, freshness).
-See `.github/org-design.md`.
+See the `agent-org-design` skill under `plugin/skills/`.
 
-Out of scope: testing/benchmarking of the agents themselves — to be designed separately.
+The agents themselves are tested by an offline eval harness under `eval/` (see `eval/TEST-PLAN.md`).
 
 ## Layout
 
 | Path | Role |
 | ---- | ---- |
-| `org.json` | Live org state: the whole node tree with charters inlined. |
-| `org.schema.json` | Structural schema for `org.json`. |
-| `.github/org-design.md` | The design reference (substrate + self-ownership). |
-| `.github/copilot-instructions.md` | The Host manual (what the Copilot session itself does). |
-| `.github/agents/*.md` | Live agent defs: `main` (seed), `splitter`, plus generated nodes. |
+| `plugin/` | The installable Copilot CLI plugin (see **Install** below). |
+| `plugin/agents/*.md` | Seed agent defs: `main`, `splitter`, and `_node.template` for generated children. |
+| `plugin/skills/` | Law-as-skills (`agent-org-loop`, `agent-org-design`) and the `bootstrap` skill. |
+| `plugin/tools/` | The owner-oracle (`owner_validator.py`) plus the bundle and worktree validators. |
+| `plugin/hooks.json` | The pre-tool-use containment hook. |
+| `plugin/org.schema.json` | Structural schema for `org.json`. |
+| `eval/`, `tests/` | The kernel's own test bed — never shipped in the plugin. |
 
-At runtime, nodes also create (on demand, never speculatively): `wiki/` pages, `skills/` playbooks,
-and `tools/` scripts — each owned by exactly one node.
+A **bootstrapped** target repo gets `org.json` (live org state) plus a git-excluded `.github/` overlay
+(tools, seed agents, Host manual). At runtime, nodes also create — on demand, never speculatively —
+`wiki/` pages, `skills/` playbooks, and `tools/` scripts, each owned by exactly one node.
 
 ## Roles
 
-- **Host** — the Copilot CLI session. Domain-less. Hardcodes the entry to `main`, gates splits to the
-  human, and is the **only** writer of `org.json`.
+- **Host** — the Copilot CLI session. Domain-less. Hardcodes the entry to `main` and gates splits to
+  the human. The `splitter` is the only writer of `org.json`.
 - **main** — the root node; owns the whole repo until the first split.
 - **splitter** — executes an approved split as one validated, git-committed transaction.
 
-## Adopt it in a target repo
+## Install
 
-1. Copy `org.json`, `org.schema.json`, and `.github/` into the target repo.
-2. Ensure it is a git repo (`git init` if needed) — git history **is** the org log; every split is a
-   commit.
-3. Start a Copilot CLI session; it invokes `main` for every request.
+`agent-org` is a GitHub Copilot CLI plugin.
 
-Growth is **one-way and gated**: nothing splits without your approval, and nothing merges back.
+**1 — Install the plugin**, from the repo's `plugin/` subdirectory or a local clone:
+
+```pwsh
+copilot plugin install aloknigam247/agent-org:plugin      # from GitHub
+# or, from a local clone:
+copilot plugin install ./agent-org/plugin
+```
+
+Start a new session (or `/restart`) so it loads; confirm with `copilot plugin list`. The oracle needs
+**Python 3 with `pathspec`** on PATH (`pip install pathspec`; the bootstrap does this too).
+
+**2 — Bootstrap your repo.** In the target git repo, ask Copilot to **run the agent-org bootstrap**
+(the `bootstrap` skill). It is **non-invasive** — everything it writes is added to `.git/info/exclude`,
+so it never appears in `git status` or gets committed. It:
+
+- creates `org.json` (root `main` owns the whole repo),
+- copies the tools into `.github/tools/` and installs the containment hook,
+- verifies coverage with the oracle.
+
+**3 — Use it.** Work through the org: `main` routes or executes, the containment hook keeps every write
+inside the acting node's domain, and a node proposes a **gated** split when its domain grows too large.
+Growth is **one-way and human-approved** — nothing splits without your say-so, and nothing merges back.
