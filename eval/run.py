@@ -8,8 +8,9 @@ runaway count, and calibration pairs for the split threshold.
 
 A fixture is a directory `eval/fixtures/<case>/` with:
   - `manifest.yml` — the case definition (see eval/README.md).
-  - `seed/`        — the repo state under test (org.json + domain files); the kernel's `.github/`
-                     and `org.schema.json` are overlaid by the runner so fixtures stay small.
+  - `seed/`        — the repo state under test (org.json + domain files); the plugin's seed agents,
+                     Host-manual instructions, and `org.schema.json` are materialized by the runner
+                     (reproducing a bootstrapped repo) so fixtures stay small.
 
 Auth: the harness's Copilot subprocess cannot use the parent session's Entra auth, so it sets
 `COPILOT_GITHUB_TOKEN` from `gh auth token` (the local GitHub login).
@@ -34,7 +35,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
 import owner_validator as ov  # noqa: E402  (path added by graders import)
-import bundle_validator as bv  # noqa: E402  (same .github/tools path)
+import bundle_validator as bv  # noqa: E402  (same plugin/tools path)
 
 KERNEL = Path(__file__).resolve().parent.parent
 META_AGENTS = {"splitter"}  # kernel meta-agents that are not org nodes but are valid `agent` targets
@@ -48,9 +49,19 @@ def sh(args, cwd=None, env=None, timeout=None):
 
 
 def build_sandbox(fixture: Path, dest: Path):
-    """Overlay the kernel skeleton, then the fixture seed, and make a baseline commit."""
-    shutil.copytree(KERNEL / ".github", dest / ".github")
-    shutil.copy2(KERNEL / "org.schema.json", dest / "org.schema.json")
+    """Reproduce a bootstrapped agent-org repo: materialize the seed agent defs from the plugin, install
+    the Host-manual instructions, add the schema, overlay the fixture seed, and make a baseline commit.
+    Tools and law are plugin-provided (fixed path) and imported directly by the graders, so they are not
+    copied into the sandbox here."""
+    agents_dir = dest / ".github" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    for a in sorted((KERNEL / "plugin" / "agents").glob("*.md")):
+        shutil.copy2(a, agents_dir / a.name)
+    instr_dir = dest / ".github" / "instructions"
+    instr_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(KERNEL / "plugin" / "instructions" / "agent-org.instructions.md",
+                 instr_dir / "agent-org.instructions.md")
+    shutil.copy2(KERNEL / "plugin" / "org.schema.json", dest / "org.schema.json")
     if (KERNEL / ".gitignore").exists():
         shutil.copy2(KERNEL / ".gitignore", dest / ".gitignore")
     seed = fixture / "seed"
@@ -77,7 +88,7 @@ def _schema_problems(org):
         import jsonschema
     except ImportError:
         return []
-    schema = json.loads((KERNEL / "org.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((KERNEL / "plugin" / "org.schema.json").read_text(encoding="utf-8"))
     return [f"schema: {e.message}" for e in list(jsonschema.Draft7Validator(schema).iter_errors(org))[:3]]
 
 
