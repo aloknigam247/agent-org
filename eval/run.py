@@ -49,14 +49,17 @@ def sh(args, cwd=None, env=None, timeout=None):
 
 
 def build_sandbox(fixture: Path, dest: Path):
-    """Reproduce a bootstrapped agent-org repo: materialize the seed agent defs from the plugin, install
-    the Host-manual instructions, add the schema, overlay the fixture seed, and make a baseline commit.
-    Tools and law are plugin-provided (fixed path) and imported directly by the graders, so they are not
-    copied into the sandbox here."""
+    """Reproduce a bootstrapped agent-org repo: materialize the seed agent defs, tools, and Host-manual
+    from the plugin, add the schema, overlay the fixture seed, and make a baseline commit. The tools go
+    to .github/tools so the agents and the containment hook can reach the oracle repo-relative."""
     agents_dir = dest / ".github" / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
     for a in sorted((KERNEL / "plugin" / "agents").glob("*.md")):
         shutil.copy2(a, agents_dir / a.name)
+    tools_dir = dest / ".github" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    for t in (KERNEL / "plugin" / "tools").glob("*.py"):
+        shutil.copy2(t, tools_dir / t.name)
     instr_dir = dest / ".github" / "instructions"
     instr_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(KERNEL / "plugin" / "instructions" / "agent-org.instructions.md",
@@ -492,6 +495,37 @@ def judge_run(manifest, result, env, model):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def install_hook_home(home: Path):
+    """Create a per-run COPILOT_HOME with the containment hook installed at user level — plugin hooks do
+    not fire in headless -p, but user-level hooks do — reproducing a bootstrapped environment."""
+    hooks = home / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    ps = ("if (Test-Path .github\\tools\\owner_validator.py) "
+          "{ python .github\\tools\\owner_validator.py --hook --org org.json } "
+          "else { '{\"permissionDecision\":\"allow\"}' }")
+    bash = ("if [ -f .github/tools/owner_validator.py ]; "
+            "then python .github/tools/owner_validator.py --hook --org org.json; "
+            "else echo '{\"permissionDecision\":\"allow\"}'; fi")
+    hook = {"version": 1, "hooks": {"preToolUse": [
+        {"type": "command", "powershell": ps, "bash": bash, "timeoutSec": 20}]}}
+    (hooks / "agent-org.json").write_text(json.dumps(hook), encoding="utf-8")
+
+
+def _acting_node(fixture: Path, manifest):
+    """The acting node to enforce containment for — only a LEAF invoked directly (not a parent, which
+    legitimately delegates across its subtree, nor the Host). None => the hook enforces only that writes
+    are not UNOWNED."""
+    agent = manifest.get("agent", "main")
+    if agent == HOST_AGENT:
+        return None
+    try:
+        org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    node = next((n for n in org.get("nodes", []) if n["id"] == agent), None)
+    return agent if (node is not None and not node.get("children")) else None
+
+
 def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True, prepare=None,
              check_fixture: bool = True):
     manifest = yaml.safe_load((fixture / "manifest.yml").read_text(encoding="utf-8"))
@@ -503,9 +537,15 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
                     "summary": {"pass_rate": None, "note": "fixture failed preflight", "problems": problems},
                     "runs": []}
     env = copilot_env()
+    acting = _acting_node(fixture, manifest)
     runs = []
     for _ in range(repeats):
         sandbox = Path(tempfile.mkdtemp(prefix=f"eval-{manifest['id']}-"))
+        home = Path(tempfile.mkdtemp(prefix="chome-"))
+        install_hook_home(home)
+        run_env = {**env, "COPILOT_HOME": str(home)}
+        if acting:
+            run_env["AGENT_ORG_ACTING"] = acting
         try:
             baseline_sha = build_sandbox(fixture, sandbox)
             if prepare:
@@ -515,7 +555,7 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
                 sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval",
                     "commit", "-q", "--no-verify", "--amend", "-m", "chore: seed"], cwd=sandbox)
                 baseline_sha = sh(["git", "rev-parse", "HEAD"], cwd=sandbox).stdout.strip()
-            result = invoke(manifest, sandbox, env, model, effort, manifest.get("timeout", 300))
+            result = invoke(manifest, sandbox, run_env, model, effort, manifest.get("timeout", 300))
             result.update(capture(sandbox, baseline_sha))
             # attribute the agent's edits with the immutable seed org (H3); validate the final org separately
             baseline_org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
@@ -541,6 +581,7 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
         finally:
             if not keep:
                 shutil.rmtree(sandbox, ignore_errors=True)
+                shutil.rmtree(home, ignore_errors=True)
     return {"case": manifest["id"], "unit": manifest.get("unit"), "agent": manifest.get("agent", "main"),
             "summary": summarize(runs), "runs": runs}
 
