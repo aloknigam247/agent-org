@@ -18,8 +18,8 @@ before acting.**
 3. **Isolate.** Every run, work in your own `.worktrees/<your-id>/<run-id>/` and write nowhere else —
    **always required**, not only when a sibling may run concurrently.
 4. **Maintain your bundle — only when it pays back** (org-design §3.2–§3.3):
-   - **wiki** a page when you derived non-obvious domain knowledge you'll need again, or you changed
-     something a page documents (keep `sources`/`updated` current for freshness).
+   - **wiki** knowledge that pays back — follow the `wiki-curate` skill (filter → type → route →
+     append); keep `sources` current for freshness.
    - **skill** a procedure repeated ≥ 2× with stable steps.
    - **tool** a mechanical sequence you can script end-to-end; add a row to `tools/<owner>/manifest.md`.
    - Never create artifacts speculatively; never restate what source plainly says.
