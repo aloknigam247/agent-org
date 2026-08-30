@@ -52,7 +52,17 @@ Run from the repository root (PowerShell):
    foreach ($l in $lines) { if ($have -notcontains $l) { Add-Content -LiteralPath $exclude -Value $l } }
    ```
 
-5. **Verify coverage** and report:
+5. **Install the containment hook** (user-level, so it fires in headless `-p` — plugin-contributed
+   hooks do not). Guarded to no-op outside agent-org repos, so it is safe globally:
+   ```pwsh
+   $hooks = Join-Path $base "hooks"; New-Item -ItemType Directory -Force -Path $hooks | Out-Null
+   $ps = 'if (Test-Path .github\tools\owner_validator.py) { python .github\tools\owner_validator.py --hook --org org.json } else { ''{"permissionDecision":"allow"}'' }'
+   $bash = 'if [ -f .github/tools/owner_validator.py ]; then python .github/tools/owner_validator.py --hook --org org.json; else echo "{\"permissionDecision\":\"allow\"}"; fi'
+   $hook = @{ version = 1; hooks = @{ preToolUse = @(@{ type = 'command'; powershell = $ps; bash = $bash; timeoutSec = 20 }) } }
+   $hook | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $hooks 'agent-org.json') -Encoding utf8
+   ```
+
+6. **Verify coverage** and report:
    ```pwsh
    python .github\tools\owner_validator.py --root . --org org.json
    ```
