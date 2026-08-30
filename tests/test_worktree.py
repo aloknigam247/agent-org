@@ -14,7 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
 import worktree as wt  # noqa: E402
 
 CASES = []

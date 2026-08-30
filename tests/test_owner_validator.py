@@ -20,10 +20,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
 import owner_validator as ov  # noqa: E402
 
-TOOL = Path(__file__).resolve().parent / "owner_validator.py"
+TOOL = Path(__file__).resolve().parent.parent / "plugin" / "tools" / "owner_validator.py"
 CASES = []
 _DIRS = []
 
