@@ -1,8 +1,12 @@
+---
+name: agent-org-loop
+description: The operating loop every agent-org node follows — orient, route or execute, isolate in a worktree, maintain its bundle, and self-check. Read before acting.
+---
+
 # Shared node loop
 
 The operating loop every node follows — `main` and every generated child. **Read and follow this
-before acting.** Read on demand by nodes; this file is deliberately not one of the auto-loaded
-instruction files, so it never reaches the Host.
+before acting.**
 
 1. **Orient.** Read `org.json`. Confirm your charter (`domain`, `concerns`, `excludes`) and, if you
    are a Parent, your children.
@@ -25,11 +29,11 @@ instruction files, so it never reaches the Host.
    (`--size <your-id>`, org-design §2.3) is over the threshold (~60% of the window), return a
    **SplitProposal** — propose only; never mutate `org.json` yourself.
 
-**Stay in your domain (hard rule).** Before you create or edit **any** path, verify you own it:
-`python .github/tools/owner_validator.py --owner <path>` — if the reported owner is not you, **do not
-write it**. Stop and surface it: route to the owning node, propose a gated new child for a genuinely
-new area, or leave a shared file to the parent. Writing outside your `domain` is a hard violation the
-integration containment gate (`--acting`, §2.7) rejects.
+**Stay in your domain (hard rule).** A **containment hook** blocks any write to a path you do not own,
+so a stray write fails fast. Before writing, confirm ownership yourself when unsure:
+`python ~/.copilot/installed-plugins/agent-org/tools/owner_validator.py --owner <path>` — if the owner
+is not you, **do not write it**. Surface it instead: route to the owning node, propose a gated new
+child for a genuinely new area, or leave a shared file to the parent.
 
 ## SplitProposal shape
 

@@ -3,7 +3,7 @@
 Computes ``owner(path)`` for a git repository's tracked files against ``org.json`` and reports
 coverage violations. This is the single source of truth for coverage — the ``splitter`` calls it
 pre-commit over a proposed tree, and the integration gate calls it over each change's diff. Coverage
-is never eyeballed. See ``.github/org-design.md`` §2.2 and §2.7.
+is never eyeballed. See the agent-org-design skill (§2.2, §2.7).
 
 Pinned glob dialect: **gitignore semantics** (via ``pathspec``).
 - ``dir/**`` matches everything under ``dir``; ``**/Name`` matches ``Name`` in any directory; a bare
@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover - version fallback
             json.dumps(
                 {
                     "status": "error",
-                    "message": "pathspec is required: pip install -r .github/tools/requirements.txt",
+                    "message": "pathspec is required: pip install -r requirements.txt",
                 }
             )
         )

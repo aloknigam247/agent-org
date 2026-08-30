@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/aloknigam/agent-org/org.schema.json",
   "title": "Agent Org",
-  "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage (exactly-one-owner via effective domain, overlap/uncovered, tree back-references and shape) is computed by the owner-oracle at .github/tools/owner_validator.py; see .github/org-design.md §2.2 and §2.7.",
+  "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage (exactly-one-owner via effective domain, overlap/uncovered, tree back-references and shape) is computed by the owner-oracle (owner_validator.py in the agent-org plugin); see the agent-org-design skill §2.2 and §2.7.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "root", "nodes"],
@@ -68,7 +68,7 @@
         "excludes": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Globs a node's domain would match but that are owned elsewhere (a cross-cutting sibling). Effective domain = domain minus excludes. A materialized excluded path that no other node covers surfaces as UNOWNED via the owner-oracle; see org-design.md §2.2, §2.7."
+          "description": "Globs a node's domain would match but that are owned elsewhere (a cross-cutting sibling). Effective domain = domain minus excludes. A materialized excluded path that no other node covers surfaces as UNOWNED via the owner-oracle; see the agent-org-design skill §2.2, §2.7."
         }
       }
     }

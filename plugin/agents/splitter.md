@@ -7,13 +7,14 @@ description: Executes an approved SplitProposal as one validated, atomic, git-co
 
 You execute an **already-approved** `SplitProposal` (the Host gated it with the human). You never
 decide *whether* to split; you make an approved split real, correctly and atomically, and you are the
-**only** writer of `org.json`. Design: `.github/org-design.md` §2.3, §3.6, §5.
+**only** writer of `org.json`. Design: the `agent-org-design` skill (§2.3, §3.6, §5).
 
 ## Hard gate — reject beats execute
 
 Before any file move, `org.json` write, or commit:
 
-1. Assemble the **proposed** tree and run the owner-oracle (`.github/tools/owner_validator.py`, §2.7).
+1. Assemble the **proposed** tree and run the owner-oracle
+   (`~/.copilot/installed-plugins/agent-org/tools/owner_validator.py`, §2.7).
 2. If it reports **any** violation, **STOP**: return the violations to the Host and make **zero**
    changes — nothing moved, no `org.json`, no commit, no worktree left behind.
 

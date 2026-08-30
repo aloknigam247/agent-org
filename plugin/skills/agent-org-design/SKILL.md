@@ -1,3 +1,8 @@
+---
+name: agent-org-design
+description: The reference design (the law) for the agent-org kernel — ownership and coverage, growth via gated splits, seams, worktree isolation, self-ownership, and invariants.
+---
+
 # Agent-Org design
 
 This is the reference design for the `agent-org` kernel: a self-organizing organization of GitHub
@@ -20,8 +25,9 @@ A repository is **completely owned by agents** when two properties hold and *sta
 
 These properties are upheld **intrinsically**, with no runtime judge:
 
-- the **owner-oracle** (`.github/tools/owner_validator.py`, §2.7) computes `owner(path)` and is run by
-  the `splitter` on every split and at every integration gate — coverage is never eyeballed;
+- the **owner-oracle** (`owner_validator.py` in the plugin, §2.7) computes `owner(path)` and is run by
+  the `splitter` on every split, at every integration gate, and by the containment hook — coverage is
+  never eyeballed;
 - **nodes** uphold self-sufficiency by discipline — the payback rule, single-writer, and freshness
   (§3).
 
@@ -159,20 +165,18 @@ agents collided" failure.
 | Path | What | Written by |
 | ---- | ---- | ---------- |
 | `org.json` | Live org state (whole tree, charters inlined). | `splitter`, on split. |
-| `org.schema.json` | Structural schema. | Humans/kernel. |
-| `.github/org-design.md` | This design. | Humans/kernel. |
-| `.github/copilot-instructions.md` | Host manual. | Humans/kernel. |
-| `.github/node-loop.md` | Shared node operating loop; read on demand by nodes, not auto-loaded (never reaches the Host). | Humans/kernel. |
-| `.github/agents/<id>.md` | Live agent def per node. `main` is seed; children generated on split. | splitter. |
+| `.github/agents/<id>.md` | Live agent def per node (seeds installed by bootstrap; children generated on split). | bootstrap / splitter. |
+| `.github/instructions/agent-org.instructions.md` | Host manual (installed by bootstrap; additive). | bootstrap. |
 | `wiki/<node>/**` | Partitioned knowledge; `*.contract.md` seams under the owning parent. | Owning node, on demand. |
 | `skills/<node>/**` | Procedures (`<name>/SKILL.md`). | Owning node, on demand. |
 | `tools/<node>/**` | Node-owned reusable scripts + `tools/<node>/manifest.md`. | Owning node, on demand. |
-| `.github/tools/**` | Kernel tooling: the owner-oracle and (later) the eval harness. | Humans/kernel. |
+| plugin `agents/` `skills/` `tools/` `org.schema.json` | The kernel: seed agents, law (this design + the loop), the owner-oracle and validators, schema. Installed at `~/.copilot/installed-plugins/agent-org/`. | Humans/kernel (the plugin). |
 
 ### 2.7 The owner-oracle and glob semantics
 
 `owner(path)` is computed by a single deterministic tool — the **owner-oracle**
-(`.github/tools/owner_validator.py`) — so coverage is never a matter of judgement:
+(`~/.copilot/installed-plugins/agent-org/tools/owner_validator.py`) — so coverage is never a matter of
+judgement:
 
 - **Glob dialect (pinned): gitignore semantics** (via `pathspec`). `dir/**` matches everything under
   `dir`; `**/Name` matches `Name` in any directory; a bare `**` matches everything. Matching is
@@ -185,8 +189,8 @@ agents collided" failure.
 
 Both consumers call this one oracle: the `splitter` (pre-commit, over the proposed tree) and the
 **integration gate** (over each change's diff, including untracked files). One function, one source of
-truth. Kernel tooling lives under `.github/tools/` (governance-owned), separate from node-owned
-`tools/<node>/` bundles.
+truth. Kernel tooling ships in the plugin (`~/.copilot/installed-plugins/agent-org/tools/`), separate
+from node-owned `tools/<node>/` bundles.
 
 ---
 
@@ -314,16 +318,15 @@ The `splitter` enforces SO1–SO4 on every split; nodes uphold SO3–SO7 by disc
 
 ## 4. Meta-agents — responsibilities
 
-- **Host** (`.github/copilot-instructions.md`) — hardcoded `main` entry; gates splits to the human and
-  invokes `splitter`; never writes `org.json` directly.
+- **Host** (the `agent-org.instructions.md` Host manual) — hardcoded `main` entry; gates splits to the
+  human and invokes `splitter`; never writes `org.json` directly.
 - **main** — root node; owns the repo until the first split; otherwise a normal node.
 - **splitter** — executes an approved split: repartition bundles, generate child defs, validate
   coverage, commit atomically, bump `version`.
 
-Nodes (`main` and generated children) share one operating loop, defined in `.github/node-loop.md`
-(read on demand; not auto-loaded, so it never reaches the Host): work in an isolated worktree →
-maintain the bundle per the payback rule → stay inside their domain → return the result and, if
-overloaded, a `SplitProposal`.
+Nodes (`main` and generated children) share one operating loop, the `agent-org-loop` skill: work in an
+isolated worktree → maintain the bundle per the payback rule → stay inside their domain → return the
+result and, if overloaded, a `SplitProposal`.
 
 ---
 

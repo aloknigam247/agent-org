@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "powershell": "python \"$env:USERPROFILE\\.copilot\\installed-plugins\\agent-org\\tools\\owner_validator.py\" --hook --org org.json",
+        "bash": "python \"$HOME/.copilot/installed-plugins/agent-org/tools/owner_validator.py\" --hook --org org.json",
+        "timeoutSec": 20
+      }
+    ]
+  }
+}

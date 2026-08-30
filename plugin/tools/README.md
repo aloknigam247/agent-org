@@ -1,31 +1,37 @@
-# Kernel tooling (`.github/tools/`)
+# agent-org runtime tools
 
-Governance-owned tooling for the agent-org kernel — distinct from node-owned `tools/<node>/` bundles.
+The deterministic engine of the agent-org kernel. These ship inside the plugin and run from its install
+directory (`~/.copilot/installed-plugins/agent-org/tools/`, or under `$COPILOT_HOME`). They need only
+`pathspec` (`pip install -r requirements.txt`). Node-owned bundles live separately under `tools/<node>/`.
 
 ## owner-oracle — `owner_validator.py`
 
-The deterministic coverage validator (design §2.7). Computes `owner(path)` for the repo's files
-against `org.json` and reports violations (`uncovered`/`UNOWNED`, `overlap`, `tree`). One source of
-truth, called by the `splitter` (pre-commit) and the integration gate.
+Computes `owner(path)` for the repo's files against `org.json` and reports violations
+(`uncovered`/`UNOWNED`, `overlap`, `tree`). One source of truth, used by the `splitter`, the integration
+gate, and the containment hook. Exit `0` when `status: ok`, non-zero on any violation. Below, `OV` is
+`python ~/.copilot/installed-plugins/agent-org/tools/owner_validator.py`.
 
 ```pwsh
-pip install -r .github/tools/requirements.txt      # one-time: installs pathspec
-
-# validate the whole repo (tracked + untracked-non-ignored)
-python .github/tools/owner_validator.py --org org.json --root .
-
-# validate an explicit path set (e.g. a change's diff)
-python .github/tools/owner_validator.py --org org.json --paths src/foo.py src/bar.ts
-
-# who owns a path?
-python .github/tools/owner_validator.py --org org.json --owner src/foo.py
-
-# integration gate: are this node's changes inside its domain? (diff = git changes, or pass --paths)
-python .github/tools/owner_validator.py --org org.json --acting <node-id>
-
-# split self-check: how big is a node's domain vs the context window?
-python .github/tools/owner_validator.py --org org.json --size <node-id>
+OV --org org.json --root .                       # validate the whole repo (tracked + untracked)
+OV --org org.json --paths src/foo.py src/bar.ts  # validate an explicit path set
+OV --org org.json --owner src/foo.py             # who owns a path?
+OV --org org.json --acting <node-id>             # integration gate: are a node's changes in its domain?
+OV --org org.json --size <node-id>               # split self-check: domain size vs the context window
+OV --org new.json --split-baseline old.json      # validate a proposed split transition
+OV --hook --org org.json                         # pre-tool-use hook: read a payload on stdin, print allow/deny
 ```
 
-Exit code is `0` when `status: ok`, non-zero on any violation. Containment reports a `containment`
-violation for any changed path owned by another node, or `uncovered` for an UNOWNED path.
+## bundle-integrity — `bundle_validator.py`
+
+Deterministic self-ownership checks (design §3.7 SO2–SO6): every live node has an agent-def; each
+wiki/skill/tool sits in a live node's namespace with a matching `owner`; sources resolve. Also
+`check_freshness` (a changed source must re-touch its artifact).
+
+```pwsh
+python ~/.copilot/installed-plugins/agent-org/tools/bundle_validator.py --org org.json --root .
+```
+
+## worktree — `worktree.py`
+
+The isolation substrate (design §2.5): create a per-run `.worktrees/<node>/<run-id>` worktree, gate its
+changes with the containment check, serialize-merge into `main`, and clean up.
