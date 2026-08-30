@@ -13,8 +13,7 @@ decide *whether* to split; you make an approved split real, correctly and atomic
 
 Before any file move, `org.json` write, or commit:
 
-1. Assemble the **proposed** tree and run the owner-oracle
-   (`~/.copilot/installed-plugins/agent-org/tools/owner_validator.py`, §2.7).
+1. Assemble the **proposed** tree and run the owner-oracle (`.github/tools/owner_validator.py`, §2.7).
 2. If it reports **any** violation, **STOP**: return the violations to the Host and make **zero**
    changes — nothing moved, no `org.json`, no commit, no worktree left behind.
 

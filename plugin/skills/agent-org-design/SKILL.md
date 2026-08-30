@@ -170,12 +170,12 @@ agents collided" failure.
 | `wiki/<node>/**` | Partitioned knowledge; `*.contract.md` seams under the owning parent. | Owning node, on demand. |
 | `skills/<node>/**` | Procedures (`<name>/SKILL.md`). | Owning node, on demand. |
 | `tools/<node>/**` | Node-owned reusable scripts + `tools/<node>/manifest.md`. | Owning node, on demand. |
-| plugin `agents/` `skills/` `tools/` `org.schema.json` | The kernel: seed agents, law (this design + the loop), the owner-oracle and validators, schema. Installed at `~/.copilot/installed-plugins/agent-org/`. | Humans/kernel (the plugin). |
+| plugin `agents/` `skills/` `tools/` `org.schema.json` | The kernel (source): seed agents, law (this design + the loop), the owner-oracle and validators, schema. Bootstrap copies the tools, seed agents, and Host manual into the repo as a **git-excluded overlay** (`.github/tools/`, `.github/agents/`, `.github/instructions/`). | Humans/kernel (the plugin). |
 
 ### 2.7 The owner-oracle and glob semantics
 
 `owner(path)` is computed by a single deterministic tool — the **owner-oracle**
-(`~/.copilot/installed-plugins/agent-org/tools/owner_validator.py`) — so coverage is never a matter of
+(`.github/tools/owner_validator.py`) — so coverage is never a matter of
 judgement:
 
 - **Glob dialect (pinned): gitignore semantics** (via `pathspec`). `dir/**` matches everything under
@@ -189,8 +189,8 @@ judgement:
 
 Both consumers call this one oracle: the `splitter` (pre-commit, over the proposed tree) and the
 **integration gate** (over each change's diff, including untracked files). One function, one source of
-truth. Kernel tooling ships in the plugin (`~/.copilot/installed-plugins/agent-org/tools/`), separate
-from node-owned `tools/<node>/` bundles.
+truth. Kernel tooling ships in the plugin and is copied to `.github/tools/` on bootstrap (git-excluded),
+separate from node-owned `tools/<node>/` bundles.
 
 ---
 

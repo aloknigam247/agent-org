@@ -31,9 +31,9 @@ before acting.**
 
 **Stay in your domain (hard rule).** A **containment hook** blocks any write to a path you do not own,
 so a stray write fails fast. Before writing, confirm ownership yourself when unsure:
-`python ~/.copilot/installed-plugins/agent-org/tools/owner_validator.py --owner <path>` — if the owner
-is not you, **do not write it**. Surface it instead: route to the owning node, propose a gated new
-child for a genuinely new area, or leave a shared file to the parent.
+`python .github/tools/owner_validator.py --owner <path>` — if the owner is not you, **do not write it**.
+Surface it instead: route to the owning node, propose a gated new child for a genuinely new area, or
+leave a shared file to the parent.
 
 ## SplitProposal shape
 
