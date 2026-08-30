@@ -1,4 +1,4 @@
-"""owner-oracle: the deterministic coverage validator for agentOrg.
+"""owner-oracle: the deterministic coverage validator for agent-org.
 
 Computes ``owner(path)`` for a git repository's tracked files against ``org.json`` and reports
 coverage violations. This is the single source of truth for coverage — the ``splitter`` calls it
@@ -273,7 +273,7 @@ def domain_size(org, acting, root):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="agentOrg owner-oracle / coverage validator")
+    parser = argparse.ArgumentParser(description="agent-org owner-oracle / coverage validator")
     parser.add_argument("--org", default="org.json", help="path to org.json")
     parser.add_argument("--root", default=".", help="repo root for git ls-files")
     parser.add_argument("--paths", nargs="*", help="explicit paths to check instead of git ls-files")

@@ -1,6 +1,6 @@
-# agentOrg — a self-organizing agent-org kernel
+# agent-org — a self-organizing agent-org kernel
 
-`agentOrg` turns an ordinary git repository into one that is **completely owned by agents**: a small
+`agent-org` turns an ordinary git repository into one that is **completely owned by agents**: a small
 tree of GitHub Copilot CLI custom agents that partition the repo, do the work, and maintain their own
 knowledge and automation.
 

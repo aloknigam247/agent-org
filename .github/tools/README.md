@@ -1,6 +1,6 @@
 # Kernel tooling (`.github/tools/`)
 
-Governance-owned tooling for the agentOrg kernel — distinct from node-owned `tools/<node>/` bundles.
+Governance-owned tooling for the agent-org kernel — distinct from node-owned `tools/<node>/` bundles.
 
 ## owner-oracle — `owner_validator.py`
 

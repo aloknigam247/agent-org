@@ -1,4 +1,4 @@
-# Runtime execution worktrees (agentOrg concurrency isolation)
+# Runtime execution worktrees (agent-org concurrency isolation)
 .worktrees/
 
 # Python

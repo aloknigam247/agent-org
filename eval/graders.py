@@ -1,4 +1,4 @@
-"""agentOrg eval graders (E2) — deterministic, property-based, reusing the owner-oracle.
+"""agent-org eval graders (E2) — deterministic, property-based, reusing the owner-oracle.
 
 Given a captured run (the manifest, the sandbox's `org.json`, the changed paths, the sandbox path,
 the response), produce a verdict: a list of checks each `pass`/`fail` with evidence, and an overall

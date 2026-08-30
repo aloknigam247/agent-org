@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/aloknigam/agentOrg/org.schema.json",
+  "$id": "https://github.com/aloknigam/agent-org/org.schema.json",
   "title": "Agent Org",
   "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage (exactly-one-owner via effective domain, overlap/uncovered, tree back-references and shape) is computed by the owner-oracle at .github/tools/owner_validator.py; see .github/org-design.md §2.2 and §2.7.",
   "type": "object",

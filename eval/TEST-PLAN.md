@@ -1,4 +1,4 @@
-# agentOrg eval — test plan
+# agent-org eval — test plan
 
 How the agent org is verified across its two pillars — **self-ownership** and **agent reliability** —
 and its **substrate** (ownership oracle, routing/delegation, splitting, worktree isolation). The

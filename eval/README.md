@@ -1,4 +1,4 @@
-# agentOrg eval harness
+# agent-org eval harness
 
 Offline, headless, fixture-based testing of the agent org. Each case gives an agent an **intent**,
 runs it in a disposable sandbox, and checks its **output** — response, actions, and resulting repo

@@ -1,4 +1,4 @@
-"""agentOrg eval harness.
+"""agent-org eval harness.
 
 Runs one fixture case against the kernel's agents, offline and headless: build a disposable sandbox
 from a fixture, invoke a Copilot agent with `copilot -p --agent`, capture what it did (response,
@@ -535,7 +535,7 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="agentOrg eval harness")
+    parser = argparse.ArgumentParser(description="agent-org eval harness")
     parser.add_argument("fixture", help="path to a fixture directory")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--model", default=None)

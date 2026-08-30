@@ -68,7 +68,7 @@ def cleanup(repo, wt):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="agentOrg worktree lifecycle helper")
+    parser = argparse.ArgumentParser(description="agent-org worktree lifecycle helper")
     parser.add_argument("repo", help="repo root (must be a git work tree on main)")
     parser.add_argument("node", help="acting node id")
     parser.add_argument("--run-id", default=None)

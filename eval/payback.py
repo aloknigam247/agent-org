@@ -52,7 +52,7 @@ def _delta(a, b):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="agentOrg payback experiment (warm vs cold bundle)")
+    ap = argparse.ArgumentParser(description="agent-org payback experiment (warm vs cold bundle)")
     ap.add_argument("fixture", help="path to a fixture directory with a manifest bundle_paths field")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--model", default=None)

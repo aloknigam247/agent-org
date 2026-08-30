@@ -1,6 +1,6 @@
 # Agent-Org design
 
-This is the reference design for the `agentOrg` kernel: a self-organizing organization of GitHub
+This is the reference design for the `agent-org` kernel: a self-organizing organization of GitHub
 Copilot CLI custom agents that **completely owns** a git repository.
 
 Read this when in doubt. `org.json` is the live state; this document is the law.
