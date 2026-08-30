@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -272,6 +274,69 @@ def domain_size(org, acting, root):
     return {"node": acting, "files": len(owned), "bytes": total_bytes, "est_tokens": total_bytes // 4}
 
 
+# preToolUse hook (containment enforcement): the file-writing tools this gate polices.
+HOOK_WRITE_TOOLS = {"create", "edit", "str_replace", "write", "apply_patch", "multi_edit"}
+_WT_RE = re.compile(r"\.worktrees/([^/]+)/[^/]+/(.+)")
+
+
+def _allow():
+    return {"permissionDecision": "allow"}
+
+
+def hook_decision(payload, org, acting_env=None):
+    """Decide allow/deny for a preToolUse payload (containment). A write is allowed only if its path is
+    owned by exactly one node AND (when the acting node is known) by that node. The acting node is taken
+    from a ``.worktrees/<id>/<run>/`` path prefix, else from ``acting_env``. Non-write tools always pass;
+    paths outside the repo pass (not ours to police)."""
+    if (payload.get("toolName") or "") not in HOOK_WRITE_TOOLS:
+        return _allow()
+    args = payload.get("toolArgs") or {}
+    path = args.get("path") or args.get("file_path") or args.get("filename")
+    if not path:
+        return _allow()
+    try:
+        rel = normalize(os.path.relpath(path, payload.get("cwd") or "."))
+    except ValueError:  # e.g. different drive on Windows — treat as outside the repo
+        return _allow()
+    if rel.startswith("../") or rel.startswith("/"):
+        return _allow()
+    acting = acting_env
+    m = _WT_RE.match(rel)
+    if m:
+        acting, rel = m.group(1), m.group(2)
+    hits = owners_of(compile_nodes(org.get("nodes", [])), rel)
+    owner = hits[0] if len(hits) == 1 else None
+    if owner is None:
+        return {"permissionDecision": "deny",
+                "permissionDecisionReason": f"agent-org: '{rel}' is UNOWNED or multiply-owned; "
+                                            f"resolve ownership before writing"}
+    if acting and owner != acting:
+        return {"permissionDecision": "deny",
+                "permissionDecisionReason": f"agent-org: '{rel}' is owned by '{owner}', "
+                                            f"not the acting node '{acting}'"}
+    return _allow()
+
+
+def _run_hook(org_path):
+    """Read a preToolUse payload on stdin and print one decision. Fail open (allow) on any error or when
+    the repo is not agent-org-managed, so the plugin hook never disturbs unrelated repos/sessions."""
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except Exception:
+        print(json.dumps(_allow()))
+        return 0
+    if not org_path.exists():
+        print(json.dumps(_allow()))
+        return 0
+    try:
+        org = json.loads(org_path.read_text(encoding="utf-8"))
+    except Exception:
+        print(json.dumps(_allow()))
+        return 0
+    print(json.dumps(hook_decision(payload, org, os.environ.get("AGENT_ORG_ACTING"))))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="agent-org owner-oracle / coverage validator")
     parser.add_argument("--org", default="org.json", help="path to org.json")
@@ -284,7 +349,12 @@ def main(argv=None):
                         help="validate a split: compare this old org.json against --org (the new tree)")
     parser.add_argument("--window", type=int, default=200000, help="context window in tokens (default 200000)")
     parser.add_argument("--threshold", type=float, default=0.60, help="split fraction of the window (default 0.60)")
+    parser.add_argument("--hook", action="store_true",
+                        help="preToolUse hook: read a tool payload on stdin, print an allow/deny decision")
     args = parser.parse_args(argv)
+
+    if args.hook:  # handled before the unconditional org load below (must allow when org.json is absent)
+        return _run_hook(Path(args.org))
 
     org = json.loads(Path(args.org).read_text(encoding="utf-8"))
 

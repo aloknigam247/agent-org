@@ -13,6 +13,7 @@ any case fails.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -400,6 +401,80 @@ def split_rejects_path_leaving_subtree():
     old, new = _root_split()  # new main domain is only root.txt; a/**, b/** cover the rest
     r = ov.check_split(old, new, ["a/x", "b/y", "orphan.txt"])  # orphan matches nothing new
     assert any("left the split subtree" in v["evidence"] for v in r["violations"]), r
+
+
+# --- preToolUse hook containment gate (deny out-of-domain / unowned writes) -------------------------
+
+_HOOK_ORG = org("root", [node("root", ["shared/**"], parent=None, children=["a", "b"], mode="Parent"),
+                         node("a", ["a/**"], parent="root", mode="Leaf"),
+                         node("b", ["b/**"], parent="root", mode="Leaf")])
+
+
+def _payload(tool, path, cwd="/repo"):
+    return {"toolName": tool, "toolArgs": {"path": path}, "cwd": cwd}
+
+
+@case
+def hook_allows_owned_write_by_acting():
+    d = ov.hook_decision(_payload("create", "/repo/a/new.py"), _HOOK_ORG, acting_env="a")
+    assert d["permissionDecision"] == "allow", d
+
+
+@case
+def hook_denies_foreign_write():
+    d = ov.hook_decision(_payload("edit", "/repo/b/x.py"), _HOOK_ORG, acting_env="a")
+    assert d["permissionDecision"] == "deny" and "owned by 'b'" in d["permissionDecisionReason"], d
+
+
+@case
+def hook_denies_unowned_write():
+    d = ov.hook_decision(_payload("create", "/repo/nowhere/x"), _HOOK_ORG, acting_env="a")
+    assert d["permissionDecision"] == "deny" and "UNOWNED" in d["permissionDecisionReason"], d
+
+
+@case
+def hook_allows_non_write_tool():
+    d = ov.hook_decision({"toolName": "glob", "toolArgs": {"pattern": "**/*"}, "cwd": "/repo"},
+                         _HOOK_ORG, acting_env="a")
+    assert d["permissionDecision"] == "allow", d
+
+
+@case
+def hook_derives_acting_from_worktree_path():
+    # the .worktrees/<id>/ prefix identifies the acting node; the (wrong) env is ignored
+    ok = ov.hook_decision(_payload("create", "/repo/.worktrees/a/run1/a/x.py"), _HOOK_ORG, acting_env="zzz")
+    assert ok["permissionDecision"] == "allow", ok
+    bad = ov.hook_decision(_payload("create", "/repo/.worktrees/a/run1/b/y.py"), _HOOK_ORG, acting_env="zzz")
+    assert bad["permissionDecision"] == "deny", bad
+
+
+@case
+def hook_without_acting_blocks_only_unowned():
+    owned = ov.hook_decision(_payload("create", "/repo/b/x.py"), _HOOK_ORG, acting_env=None)
+    assert owned["permissionDecision"] == "allow", owned      # owned path, containment uncheckable
+    unowned = ov.hook_decision(_payload("create", "/repo/z/x"), _HOOK_ORG, acting_env=None)
+    assert unowned["permissionDecision"] == "deny", unowned
+
+
+@case
+def hook_cli_reads_stdin_and_denies_foreign():
+    repo = git_repo({"a/keep.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
+    pl = json.dumps(_payload("edit", str(repo / "b" / "x.py"), str(repo)))
+    env = dict(os.environ, AGENT_ORG_ACTING="a")
+    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / "org.json")],
+                       input=pl, capture_output=True, text=True, env=env)
+    assert json.loads(p.stdout)["permissionDecision"] == "deny", p.stdout
+
+
+@case
+def hook_cli_allows_when_no_org():
+    # a non-agent-org repo (no org.json) must never be disturbed by the plugin hook
+    d = Path(tempfile.mkdtemp(prefix="noorg-"))
+    _DIRS.append(d)
+    pl = json.dumps(_payload("create", str(d / "anything.txt"), str(d)))
+    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(d / "org.json")],
+                       input=pl, capture_output=True, text=True)
+    assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout
 
 
 def run():
