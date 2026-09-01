@@ -517,6 +517,36 @@ def hook_cli_allows_when_no_org():
     assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout
 
 
+# --- usage log + split-advice (parent's over-burden signal) -----------------------------------------
+
+@case
+def usage_record_and_split_advice_over_by_usage():
+    repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
+    # 'a' owns a tiny domain, but a session burned a lot of tokens -> over threshold by usage
+    ov.usage_record(str(repo), "a", 100)
+    ov.usage_record(str(repo), "a", 130000)  # peak
+    adv = ov.split_advice(_HOOK_ORG, "a", str(repo), window=200000, threshold=0.60)  # limit = 120000
+    assert adv["peak_session_tokens"] == 130000, adv
+    assert adv["recommend_split"] is True and any("peak session" in r for r in adv["reasons"]), adv
+
+
+@case
+def split_advice_not_over_when_small():
+    repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
+    ov.usage_record(str(repo), "a", 5000)
+    adv = ov.split_advice(_HOOK_ORG, "a", str(repo), window=200000, threshold=0.60)
+    assert adv["recommend_split"] is False, adv
+
+
+@case
+def usage_record_cli_appends_log():
+    repo = git_repo({"a/x.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
+    subprocess.run([sys.executable, str(TOOL), "--usage-record", "a", "--tokens", "150000", "--root", str(repo)],
+                   capture_output=True, text=True)
+    log = repo / ".git" / "agent-org" / "usage" / "a.jsonl"
+    assert log.exists() and json.loads(log.read_text(encoding="utf-8").splitlines()[0])["tokens"] == 150000
+
+
 def run():
     failed = 0
     try:

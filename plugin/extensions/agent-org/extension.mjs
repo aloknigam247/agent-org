@@ -8,14 +8,17 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const acting = new Map(); // sessionId -> node id, for the life of the session (in-memory)
+const acting = new Map();       // sessionId -> node id (from the parent-injected marker)
+const nameByAgent = new Map();  // agentId -> agentName (from subagent.started)
+const tokensByAgent = new Map(); // agentId -> summed tokens (from assistant.usage)
 const MARKER = /AgentOrgActingNode:\s*(\S+)/;
 
 const sidOf = (input, invocation) => invocation?.sessionId ?? input?.sessionId;
 const cwdOf = (input) => input?.workingDirectory ?? input?.cwd ?? process.cwd();
 const allow = { permissionDecision: "allow" };
+const toolPath = (cwd) => path.join(cwd, ".github", "tools", "owner_validator.py");
 
-await joinSession({
+const session = await joinSession({
   hooks: {
     onUserPromptSubmitted: async (input, invocation) => {
       const s = sidOf(input, invocation);
@@ -25,7 +28,7 @@ await joinSession({
     onPreToolUse: async (input, invocation) => {
       const cwd = cwdOf(input);
       const org = path.join(cwd, "org.json");
-      const tool = path.join(cwd, ".github", "tools", "owner_validator.py");
+      const tool = toolPath(cwd);
       if (!fs.existsSync(org) || !fs.existsSync(tool)) return undefined; // not an agent-org repo
       const s = sidOf(input, invocation);
       const node = s ? acting.get(s) : undefined;
@@ -45,3 +48,29 @@ await joinSession({
   },
   tools: [],
 });
+
+// Per-child token accounting: attribute usage to a subagent, then on completion persist it to the usage
+// log so the parent can detect an over-burdened child and propose a split even if the child did not.
+session.on((event) => {
+  const t = event?.type || "";
+  const aid = event?.agentId ?? null;
+  const cwd = process.cwd();
+  if (t === "subagent.started") {
+    if (aid) nameByAgent.set(aid, event?.data?.agentName);
+  } else if (t === "assistant.usage" && aid) {
+    const d = event?.data || {};
+    const toks = (d.inputTokens || 0) + (d.outputTokens || 0) + (d.cacheReadTokens || 0) + (d.cacheWriteTokens || 0);
+    tokensByAgent.set(aid, (tokensByAgent.get(aid) || 0) + toks);
+  } else if (t === "subagent.completed" && aid) {
+    const node = nameByAgent.get(aid);
+    const tokens = tokensByAgent.get(aid) || 0;
+    const tool = toolPath(cwd);
+    if (node && tokens > 0 && fs.existsSync(tool)) {
+      spawnSync("python", [tool, "--usage-record", node, "--tokens", String(tokens), "--root", cwd],
+        { encoding: "utf-8" });
+    }
+    tokensByAgent.delete(aid);
+    nameByAgent.delete(aid);
+  }
+});
+

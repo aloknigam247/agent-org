@@ -34,6 +34,10 @@ before acting.**
    **propose the change to the owning node** — if the owner is in your subtree, dispatch it; if not,
    return the unresolved changes to *your* parent, so they route up to the common ancestor that owns
    both. The owner decides whether to apply it (single-writer holds). Never apply a sibling's file yourself.
+   Then check each child for **over-burden** — `python .github/tools/owner_validator.py --split-advice
+   <child-id>` combines the child's domain size with its peak recorded token usage. If it recommends a
+   split, **return a SplitProposal for that child on its behalf** (it may not have self-reported). You
+   propose; the human gates it and the `splitter` executes.
 
 **Stay in your domain.** A **containment hook** watches every write. In **warn** mode it lets the write
 land (so its content is preserved for reroute) but **logs** it as foreign; in **enforce** mode it blocks

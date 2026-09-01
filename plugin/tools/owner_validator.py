@@ -385,6 +385,43 @@ def _log_foreign(payload, foreign):
             pass
 
 
+def usage_record(root, agent, tokens):
+    """Append one session's token consumption for a node to `.git/agent-org/usage/<node>.jsonl`. Written
+    by the extension (from usage events) or a post-run step (from the usage file's agentMetrics); read by
+    the parent at reconciliation. Persistent + git-local, so a burden trend survives across sessions."""
+    d = _state_dir(root, "usage")
+    if d:
+        try:
+            with (d / f"{agent}.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"tokens": int(tokens)}) + "\n")
+        except Exception:
+            pass
+
+
+def split_advice(org, agent, root, window=200000, threshold=0.60):
+    """Advise whether a node is over-burdened, so a **parent** can propose a split even if the child did
+    not self-report. Combines two signals: the static domain-size proxy (--size) and the peak per-session
+    token consumption recorded in the usage log. Over-threshold on either => recommend a split."""
+    est = domain_size(org, agent, root)["est_tokens"]
+    peak = 0
+    d = _state_dir(root, "usage")
+    f = (d / f"{agent}.jsonl") if d else None
+    if f and f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            try:
+                peak = max(peak, int(json.loads(line).get("tokens", 0)))
+            except Exception:
+                pass
+    limit = threshold * window
+    reasons = []
+    if est >= limit:
+        reasons.append(f"domain est_tokens {est} >= {limit:.0f}")
+    if peak >= limit:
+        reasons.append(f"peak session tokens {peak} >= {limit:.0f}")
+    return {"agent": agent, "domain_est_tokens": est, "peak_session_tokens": peak,
+            "window": window, "threshold": threshold, "recommend_split": bool(reasons), "reasons": reasons}
+
+
 def _run_hook(org_path, mode="warn"):
     """preToolUse hook entry: read a payload on stdin, classify, log a foreign write (warn mode), print
     the decision. Fail open (allow) on any error or when the repo is not agent-org-managed. A relative
@@ -440,15 +477,29 @@ def main(argv=None):
                         help="preToolUse hook mode: warn (allow + log a foreign write) or enforce (deny)")
     parser.add_argument("--record-acting", action="store_true",
                         help="userPromptSubmitted hook: read a payload on stdin, record sessionId -> node")
+    parser.add_argument("--usage-record", metavar="NODE",
+                        help="append a session's token consumption for NODE to the usage log (with --tokens)")
+    parser.add_argument("--tokens", type=int, default=0, help="token count for --usage-record")
+    parser.add_argument("--split-advice", metavar="NODE",
+                        help="advise whether NODE is over-burdened (domain size + peak usage) -> split")
     args = parser.parse_args(argv)
 
     if args.record_acting:
         return _run_record_acting()
 
+    if args.usage_record:
+        usage_record(args.root, args.usage_record, args.tokens)
+        return 0
+
     if args.hook:  # handled before the unconditional org load below (must allow when org.json is absent)
         return _run_hook(Path(args.org), mode=args.mode)
 
     org = json.loads(Path(args.org).read_text(encoding="utf-8"))
+
+    if args.split_advice:
+        result = split_advice(org, args.split_advice, args.root, args.window, args.threshold)
+        print(json.dumps(result, indent=2))
+        return 0
 
     if args.owner:
         hits = owners_of(compile_nodes(org["nodes"]), args.owner)
