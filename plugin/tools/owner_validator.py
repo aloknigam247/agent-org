@@ -274,52 +274,115 @@ def domain_size(org, acting, root):
     return {"node": acting, "files": len(owned), "bytes": total_bytes, "est_tokens": total_bytes // 4}
 
 
-# preToolUse hook (containment enforcement): the file-writing tools this gate polices.
+# pre-tool-use containment hook + the in-place identity / foreign-log machinery.
 HOOK_WRITE_TOOLS = {"create", "edit", "str_replace", "write", "apply_patch", "multi_edit"}
 _WT_RE = re.compile(r"\.worktrees/([^/]+)/[^/]+/(.+)")
+MARKER_RE = re.compile(r"AgentOrgActingNode:\s*(\S+)")
 
 
 def _allow():
     return {"permissionDecision": "allow"}
 
 
-def hook_decision(payload, org, acting_env=None):
-    """Decide allow/deny for a preToolUse payload (containment). A write is allowed only if its path is
-    owned by exactly one node AND (when the acting node is known) by that node. The acting node is taken
-    from a ``.worktrees/<id>/<run>/`` path prefix, else from ``acting_env``. Non-write tools always pass;
-    paths outside the repo pass (not ours to police)."""
+def _state_dir(cwd, sub):
+    """The `.git/agent-org/<sub>/` state dir, shared across worktrees via --git-common-dir. Lives inside
+    `.git`, so it is never tracked (non-invasive). Returns None outside a git repo."""
+    try:
+        out = subprocess.run(["git", "-C", str(cwd or "."), "rev-parse", "--git-common-dir"],
+                             capture_output=True, text=True)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    g = Path(out.stdout.strip())
+    if not g.is_absolute():
+        g = Path(cwd or ".") / g
+    d = g / "agent-org" / sub
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return None
+    return d
+
+
+def record_acting(payload):
+    """userPromptSubmitted hook: parse the parent-injected `AgentOrgActingNode: <id>` marker from the
+    prompt and persist sessionId -> node, so preToolUse can attribute in-place writes to the acting node
+    (in-place has no worktree path to attribute by)."""
+    sid = payload.get("sessionId")
+    m = MARKER_RE.search(payload.get("prompt") or "")
+    if not (sid and m):
+        return
+    d = _state_dir(payload.get("cwd"), "acting")
+    if d:
+        try:
+            (d / sid).write_text(m.group(1), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _acting_from_map(payload):
+    sid = payload.get("sessionId")
+    if not sid:
+        return None
+    d = _state_dir(payload.get("cwd"), "acting")
+    f = (d / sid) if d else None
+    if f and f.exists():
+        try:
+            return f.read_text(encoding="utf-8").strip() or None
+        except Exception:
+            return None
+    return None
+
+
+def hook_decision(payload, org, mode="warn", acting=None):
+    """Classify a preToolUse write. Returns (decision, foreign): `foreign` is {path, owner, acting} when
+    the write is UNOWNED or outside the acting node's domain, else None. `enforce` mode denies a foreign
+    write; `warn` mode allows it (so its content is preserved on disk for reroute) and the caller logs
+    `foreign`. The acting node comes from a `.worktrees/<id>/` path prefix, else the caller's `acting`."""
     if (payload.get("toolName") or "") not in HOOK_WRITE_TOOLS:
-        return _allow()
+        return _allow(), None
     args = payload.get("toolArgs") or {}
     path = args.get("path") or args.get("file_path") or args.get("filename")
     if not path:
-        return _allow()
+        return _allow(), None
     try:
         rel = normalize(os.path.relpath(path, payload.get("cwd") or "."))
-    except ValueError:  # e.g. different drive on Windows — treat as outside the repo
-        return _allow()
+    except ValueError:  # different drive on Windows — outside the repo
+        return _allow(), None
     if rel.startswith("../") or rel.startswith("/"):
-        return _allow()
-    acting = acting_env
+        return _allow(), None
     m = _WT_RE.match(rel)
     if m:
         acting, rel = m.group(1), m.group(2)
     hits = owners_of(compile_nodes(org.get("nodes", [])), rel)
     owner = hits[0] if len(hits) == 1 else None
     if owner is None:
-        return {"permissionDecision": "deny",
-                "permissionDecisionReason": f"agent-org: '{rel}' is UNOWNED or multiply-owned; "
-                                            f"resolve ownership before writing"}
-    if acting and owner != acting:
-        return {"permissionDecision": "deny",
-                "permissionDecisionReason": f"agent-org: '{rel}' is owned by '{owner}', "
-                                            f"not the acting node '{acting}'"}
-    return _allow()
+        foreign, reason = {"path": rel, "owner": None, "acting": acting}, \
+            f"agent-org: '{rel}' is UNOWNED or multiply-owned"
+    elif acting and owner != acting:
+        foreign, reason = {"path": rel, "owner": owner, "acting": acting}, \
+            f"agent-org: '{rel}' is owned by '{owner}', not the acting node '{acting}'"
+    else:
+        return _allow(), None
+    if mode == "enforce":
+        return {"permissionDecision": "deny", "permissionDecisionReason": reason}, foreign
+    return _allow(), foreign
 
 
-def _run_hook(org_path):
-    """Read a preToolUse payload on stdin and print one decision. Fail open (allow) on any error or when
-    the repo is not agent-org-managed, so the plugin hook never disturbs unrelated repos/sessions."""
+def _log_foreign(payload, foreign):
+    d = _state_dir(payload.get("cwd"), "foreign")
+    if d:
+        try:
+            with (d / f"{payload.get('sessionId') or 'unknown'}.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(foreign) + "\n")
+        except Exception:
+            pass
+
+
+def _run_hook(org_path, mode="warn"):
+    """preToolUse hook entry: read a payload on stdin, classify, log a foreign write (warn mode), print
+    the decision. Fail open (allow) on any error or when the repo is not agent-org-managed."""
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except Exception:
@@ -333,7 +396,20 @@ def _run_hook(org_path):
     except Exception:
         print(json.dumps(_allow()))
         return 0
-    print(json.dumps(hook_decision(payload, org, os.environ.get("AGENT_ORG_ACTING"))))
+    acting = _acting_from_map(payload) or os.environ.get("AGENT_ORG_ACTING")
+    decision, foreign = hook_decision(payload, org, mode=mode, acting=acting)
+    if foreign is not None:
+        _log_foreign(payload, foreign)
+    print(json.dumps(decision))
+    return 0
+
+
+def _run_record_acting():
+    """userPromptSubmitted hook entry: read a payload on stdin and record the sessionId -> node marker."""
+    try:
+        record_acting(json.loads(sys.stdin.read() or "{}"))
+    except Exception:
+        pass
     return 0
 
 
@@ -351,10 +427,17 @@ def main(argv=None):
     parser.add_argument("--threshold", type=float, default=0.60, help="split fraction of the window (default 0.60)")
     parser.add_argument("--hook", action="store_true",
                         help="preToolUse hook: read a tool payload on stdin, print an allow/deny decision")
+    parser.add_argument("--mode", choices=["warn", "enforce"], default="warn",
+                        help="preToolUse hook mode: warn (allow + log a foreign write) or enforce (deny)")
+    parser.add_argument("--record-acting", action="store_true",
+                        help="userPromptSubmitted hook: read a payload on stdin, record sessionId -> node")
     args = parser.parse_args(argv)
 
+    if args.record_acting:
+        return _run_record_acting()
+
     if args.hook:  # handled before the unconditional org load below (must allow when org.json is absent)
-        return _run_hook(Path(args.org))
+        return _run_hook(Path(args.org), mode=args.mode)
 
     org = json.loads(Path(args.org).read_text(encoding="utf-8"))
 

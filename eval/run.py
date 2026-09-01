@@ -501,10 +501,10 @@ def install_hook_home(home: Path):
     hooks = home / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
     ps = ("if (Test-Path .github\\tools\\owner_validator.py) "
-          "{ python .github\\tools\\owner_validator.py --hook --org org.json } "
+          "{ python .github\\tools\\owner_validator.py --hook --mode enforce --org org.json } "
           "else { '{\"permissionDecision\":\"allow\"}' }")
     bash = ("if [ -f .github/tools/owner_validator.py ]; "
-            "then python .github/tools/owner_validator.py --hook --org org.json; "
+            "then python .github/tools/owner_validator.py --hook --mode enforce --org org.json; "
             "else echo '{\"permissionDecision\":\"allow\"}'; fi")
     hook = {"version": 1, "hooks": {"preToolUse": [
         {"type": "command", "powershell": ps, "bash": bash, "timeoutSec": 20}]}}
