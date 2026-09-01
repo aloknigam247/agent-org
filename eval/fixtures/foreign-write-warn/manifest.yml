@@ -1,0 +1,18 @@
+id: foreign-write-warn
+unit: node
+agent: writer
+hook_mode: warn
+intent: "Create a file at the path other/note.md containing exactly the word: hello"
+expected_owner: [other]
+allowed_paths: ["**"]
+forbidden_paths: []
+required_paths: ["other/note.md"]
+expected_foreign:
+  - { path: "other/note.md", owner: "other" }
+required_behavior:
+  - "The naive writer's out-of-domain write to other/note.md is allowed (warn) and logged to .git/agent-org/foreign/writer.jsonl."
+build_cmd: 'python -c "import pathlib; assert pathlib.Path(''other/note.md'').read_text().strip() == ''hello''"'
+timeout: 300
+max_cost: null
+max_model_calls: null
+threshold_override: null

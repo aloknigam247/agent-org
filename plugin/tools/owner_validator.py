@@ -387,12 +387,16 @@ def _log_foreign(payload, foreign):
 
 def _run_hook(org_path, mode="warn"):
     """preToolUse hook entry: read a payload on stdin, classify, log a foreign write (warn mode), print
-    the decision. Fail open (allow) on any error or when the repo is not agent-org-managed."""
+    the decision. Fail open (allow) on any error or when the repo is not agent-org-managed. A relative
+    org path is resolved against the payload's cwd (the -C workspace), not the hook process cwd, so the
+    hook works regardless of where the CLI spawns it."""
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except Exception:
         print(json.dumps(_allow()))
         return 0
+    if not org_path.is_absolute():
+        org_path = Path(payload.get("cwd") or ".") / org_path
     if not org_path.exists():
         print(json.dumps(_allow()))
         return 0

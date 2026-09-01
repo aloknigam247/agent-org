@@ -253,11 +253,16 @@ def _infra_error(events):
 HOST_AGENT = "host"  # invoke the Host session itself (no --agent), so it routes to main per its manual
 
 
-def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path):
+def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path, acting=None):
     """The `copilot` argv for a run. `agent: host` omits --agent so the Host (copilot-instructions.md)
-    performs the hardcoded entry to main — the only way to exercise the Host->main entry invariant."""
+    performs the hardcoded entry to main — the only way to exercise the Host->main entry invariant. When
+    `acting` is given, prepend the `AgentOrgActingNode:` marker to the prompt (simulating the parent's
+    injection) so the record-acting hook can attribute this session's writes on disk."""
     agent = manifest.get("agent", "main")
-    cmd = ["copilot", "-p", manifest["intent"]]
+    prompt = manifest["intent"]
+    if acting:
+        prompt = f"AgentOrgActingNode: {acting}\n\n{prompt}"
+    cmd = ["copilot", "-p", prompt]
     if agent != HOST_AGENT:
         cmd += ["--agent", agent]
     cmd += ["-C", str(sandbox), "--add-dir", str(sandbox),
@@ -270,9 +275,9 @@ def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path):
     return cmd
 
 
-def invoke(manifest, sandbox: Path, env, model, effort, timeout):
+def invoke(manifest, sandbox: Path, env, model, effort, timeout, acting=None):
     usage = sandbox / ".eval-usage.json"
-    cmd = build_invoke_cmd(manifest, sandbox, model, effort, usage)
+    cmd = build_invoke_cmd(manifest, sandbox, model, effort, usage, acting)
     started = time.time()
     timed_out = False
     try:
@@ -495,19 +500,24 @@ def judge_run(manifest, result, env, model):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def install_hook_home(home: Path):
-    """Create a per-run COPILOT_HOME with the containment hook installed at user level — plugin hooks do
-    not fire in headless -p, but user-level hooks do — reproducing a bootstrapped environment."""
+def install_hook_home(home: Path, mode: str = "enforce"):
+    """Create a per-run COPILOT_HOME with the agent-org command hooks installed at user level — plugin
+    hooks and extensions do not fire in headless -p, but user-level command hooks do — reproducing a
+    bootstrapped environment. `mode` is warn (allow + log foreign) or enforce (deny)."""
     hooks = home / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    ps = ("if (Test-Path .github\\tools\\owner_validator.py) "
-          "{ python .github\\tools\\owner_validator.py --hook --mode enforce --org org.json } "
-          "else { '{\"permissionDecision\":\"allow\"}' }")
-    bash = ("if [ -f .github/tools/owner_validator.py ]; "
-            "then python .github/tools/owner_validator.py --hook --mode enforce --org org.json; "
-            "else echo '{\"permissionDecision\":\"allow\"}'; fi")
-    hook = {"version": 1, "hooks": {"preToolUse": [
-        {"type": "command", "powershell": ps, "bash": bash, "timeoutSec": 20}]}}
+    ov = "python .github\\tools\\owner_validator.py"
+    ovb = "python .github/tools/owner_validator.py"
+    rec = f"if (Test-Path .github\\tools\\owner_validator.py) {{ {ov} --record-acting }}"
+    recb = f"if [ -f .github/tools/owner_validator.py ]; then {ovb} --record-acting; fi"
+    ps = (f"if (Test-Path .github\\tools\\owner_validator.py) "
+          f"{{ {ov} --hook --mode {mode} --org org.json }} else {{ '{{\"permissionDecision\":\"allow\"}}' }}")
+    bash = (f"if [ -f .github/tools/owner_validator.py ]; "
+            f"then {ovb} --hook --mode {mode} --org org.json; else echo '{{\"permissionDecision\":\"allow\"}}'; fi")
+    hook = {"version": 1, "hooks": {
+        "userPromptSubmitted": [{"type": "command", "powershell": rec, "bash": recb, "timeoutSec": 20}],
+        "preToolUse": [{"type": "command", "powershell": ps, "bash": bash, "timeoutSec": 20}],
+    }}
     (hooks / "agent-org.json").write_text(json.dumps(hook), encoding="utf-8")
 
 
@@ -542,7 +552,7 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
     for _ in range(repeats):
         sandbox = Path(tempfile.mkdtemp(prefix=f"eval-{manifest['id']}-"))
         home = Path(tempfile.mkdtemp(prefix="chome-"))
-        install_hook_home(home)
+        install_hook_home(home, manifest.get("hook_mode", "enforce"))
         run_env = {**env, "COPILOT_HOME": str(home)}
         if acting:
             run_env["AGENT_ORG_ACTING"] = acting
@@ -555,7 +565,7 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
                 sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval",
                     "commit", "-q", "--no-verify", "--amend", "-m", "chore: seed"], cwd=sandbox)
                 baseline_sha = sh(["git", "rev-parse", "HEAD"], cwd=sandbox).stdout.strip()
-            result = invoke(manifest, sandbox, run_env, model, effort, manifest.get("timeout", 300))
+            result = invoke(manifest, sandbox, run_env, model, effort, manifest.get("timeout", 300), acting)
             result.update(capture(sandbox, baseline_sha))
             # attribute the agent's edits with the immutable seed org (H3); validate the final org separately
             baseline_org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))

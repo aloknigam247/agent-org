@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "root": "main",
+  "nodes": [
+    {
+      "id": "main",
+      "parent": null,
+      "children": ["writer", "other"],
+      "mode": "Parent",
+      "charter": {
+        "domain": [".github/**", "org.json", "org.schema.json", ".gitignore", "shared/**"],
+        "concerns": ["shared config"],
+        "excludes": []
+      }
+    },
+    {
+      "id": "writer",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": { "domain": ["writer/**"], "concerns": ["writer's own files"], "excludes": [] }
+    },
+    {
+      "id": "other",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": { "domain": ["other/**"], "concerns": ["other's own files"], "excludes": [] }
+    }
+  ]
+}

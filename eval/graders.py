@@ -100,9 +100,11 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
 
     # containment — a leaf must keep every change in its own domain; a parent legitimately routes across
     # its subtree, so routing/paths/coverage validate it instead (a single-owner check would false-fail).
+    # A warn-mode fixture (expected_foreign) intentionally allows foreign writes, so foreign_log is the
+    # assertion there and containment is skipped.
     acting = manifest.get("agent", "main")
     acting_node = {n["id"]: n for n in org.get("nodes", [])}.get(acting)
-    if acting_node and not acting_node.get("children") and changed_paths:
+    if acting_node and not acting_node.get("children") and changed_paths and not manifest.get("expected_foreign"):
         con = ov.check_containment(org, acting, changed_paths)
         checks.append({"check": "containment", "result": "pass" if con["status"] == "ok" else "fail",
                        "evidence": con["violations"][:5]})
@@ -113,6 +115,25 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
     if fresh.get("checked"):
         checks.append({"check": "freshness", "result": "pass" if fresh["status"] == "ok" else "fail",
                        "evidence": fresh["violations"][:5]})
+
+    # foreign-log (warn-mode enforcement) — assert the containment hook logged the expected out-of-domain
+    # writes to .git/agent-org/foreign/<acting>.jsonl. Declared by expected_foreign: [{path, owner}].
+    expected_foreign = manifest.get("expected_foreign")
+    if expected_foreign:
+        logged = []
+        fdir = Path(sandbox) / ".git" / "agent-org" / "foreign"
+        if fdir.exists():
+            for f in fdir.glob("*.jsonl"):
+                for line in f.read_text(encoding="utf-8").splitlines():
+                    try:
+                        logged.append(json.loads(line))
+                    except Exception:
+                        pass
+        missing = [e for e in expected_foreign
+                   if not any(_match_any([e["path"]], g.get("path", "")) and g.get("owner") == e.get("owner")
+                              for g in logged)]
+        checks.append({"check": "foreign_log", "result": "pass" if not missing else "fail",
+                       "evidence": f"missing={missing} logged={[g.get('path') for g in logged]}"})
 
     # build/tests — optional objective outcome (timeout-bounded so a hung build fails, not stalls)
     build_cmd = manifest.get("build_cmd")
