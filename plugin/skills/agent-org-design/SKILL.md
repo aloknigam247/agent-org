@@ -192,6 +192,31 @@ Both consumers call this one oracle: the `splitter` (pre-commit, over the propos
 truth. Kernel tooling ships in the plugin and is copied to `.github/tools/` on bootstrap (git-excluded),
 separate from node-owned `tools/<node>/` bundles.
 
+### 2.8 Enforcement — prevent, attribute, reconcile
+
+Ownership is enforced in layers, because agents write immediately and a parent can't segregate what it
+can't foresee. No single layer is trusted alone; the deterministic ones backstop the soft ones.
+
+- **Prevent (plan-time).** A parent maps each *intended* change to its owning child (oracle
+  `owner(path)`) and dispatches each child only the paths it owns. This stops most cross-domain writes
+  before they happen.
+- **Attribute (write-time).** A `preToolUse` hook classifies every write against the acting node's
+  domain. With a **worktree**, the acting node is the `.worktrees/<id>/` path prefix. **In-place** (no
+  worktree), it is resolved from a `sessionId → node` map: the parent prepends `AgentOrgActingNode:
+  <child>` to the child's prompt, a `userPromptSubmitted` hook records `sessionId → node`, and the
+  `preToolUse` hook reads it. The hook runs in **warn** mode by default — it *allows* the write (so its
+  content is preserved for reroute) and **logs** a foreign write to `.git/agent-org/foreign/<node>.jsonl`
+  — or **enforce** mode, which denies. Host: an in-memory **extension** interactively, **user-level
+  command hooks** headless (plugin hooks/extensions don't fire under `-p`). The hook only needs identity
+  for per-node attribution; the **UNOWNED** guard needs none.
+- **Reconcile (session-end).** The parent reads each child's foreign log and **proposes** each change to
+  its owner (propose-to-owner, never force-apply — single-writer holds). Unresolved changes route up to
+  the lowest common ancestor that owns both domains. The authoritative check is the parent running the
+  oracle over the child's diff — it sees every foreign change even if the child under-reports.
+
+State lives under `.git/agent-org/` (never tracked; non-invasive). The real-time hook is fast-fail
+prevention; the parent-orchestrated reconciliation is the authoritative backstop.
+
 ---
 
 ## 3. Self-Ownership

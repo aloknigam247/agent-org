@@ -489,10 +489,11 @@ def hook_cli_warn_allows_and_logs_foreign():
     p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / "org.json")],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout   # warn = allow
-    log = repo / ".git" / "agent-org" / "foreign" / "S2.jsonl"
+    log = repo / ".git" / "agent-org" / "foreign" / "a.jsonl"   # keyed by the acting node 'a'
     assert log.exists(), "foreign write must be logged"
     entry = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
-    assert entry == {"path": "b/x.py", "owner": "b", "acting": "a"}, entry
+    assert entry["path"] == "b/x.py" and entry["owner"] == "b" and entry["acting"] == "a", entry
+    assert entry["sessionId"] == "S2", entry
 
 
 @case

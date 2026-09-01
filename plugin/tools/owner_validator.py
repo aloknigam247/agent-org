@@ -371,11 +371,16 @@ def hook_decision(payload, org, mode="warn", acting=None):
 
 
 def _log_foreign(payload, foreign):
+    """Append a foreign write to `.git/agent-org/foreign/<acting-node>.jsonl` — keyed by the acting node
+    so the parent (which knows which child it dispatched) can read it at reconciliation without knowing
+    the child's session id. Falls back to the session id when the acting node is unknown."""
+    key = foreign.get("acting") or payload.get("sessionId") or "unknown"
     d = _state_dir(payload.get("cwd"), "foreign")
     if d:
         try:
-            with (d / f"{payload.get('sessionId') or 'unknown'}.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(foreign) + "\n")
+            entry = dict(foreign, sessionId=payload.get("sessionId"))
+            with (d / f"{key}.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
         except Exception:
             pass
 

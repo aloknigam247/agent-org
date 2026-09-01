@@ -26,17 +26,19 @@ before acting.**
    - **skill** a procedure repeated ≥ 2× with stable steps.
    - **tool** a mechanical sequence you can script end-to-end; add a row to `tools/<owner>/manifest.md`.
    - Never create artifacts speculatively; never restate what source plainly says.
-5. **Report & self-check.** Return the result. Every changed path must be inside your `domain` —
-   integration runs the owner-oracle **containment** check (`--acting <your-id>`, org-design §2.7)
-   and rejects out-of-domain writes. Then run the **split self-check**: if your domain-size proxy
-   (`--size <your-id>`, org-design §2.3) is over the threshold (~60% of the window), return a
+5. **Report & self-check.** Return the result. Then run the **split self-check**: if your domain-size
+   proxy (`--size <your-id>`, org-design §2.3) is over the threshold (~60% of the window), return a
    **SplitProposal** — propose only; never mutate `org.json` yourself.
+6. **Reconcile (Parent).** After your children return, read each child's foreign-change log
+   `.git/agent-org/foreign/<child-id>.jsonl` (writes it made outside its domain, warn-mode). For each,
+   **propose the change to the owning node** — if the owner is in your subtree, dispatch it; if not,
+   return the unresolved changes to *your* parent, so they route up to the common ancestor that owns
+   both. The owner decides whether to apply it (single-writer holds). Never apply a sibling's file yourself.
 
-**Stay in your domain (hard rule).** A **containment hook** blocks any write to a path you do not own,
-so a stray write fails fast. Before writing, confirm ownership yourself when unsure:
-`python .github/tools/owner_validator.py --owner <path>` — if the owner is not you, **do not write it**.
-Surface it instead: route to the owning node, propose a gated new child for a genuinely new area, or
-leave a shared file to the parent.
+**Stay in your domain.** A **containment hook** watches every write. In **warn** mode it lets the write
+land (so its content is preserved for reroute) but **logs** it as foreign; in **enforce** mode it blocks
+it. Either way, when unsure, confirm first: `python .github/tools/owner_validator.py --owner <path>` — if
+the owner is not you, don't write it; surface it so it reaches the owner via your parent (step 6).
 
 ## SplitProposal shape
 
