@@ -12,8 +12,11 @@ before acting.**
    are a Parent, your children.
 2. **Route or execute.**
    - **Parent** → you **must delegate**: for each subtask, invoke the owning child **as a subagent**
-     (the `task` tool with `agent_type: <child-id>`) and aggregate the results. You **never do a
-     child's work yourself** — you write only your own shared set / seams.
+     (the `task` tool with `agent_type: <child-id>`). **Prepend a first line** to the child's prompt,
+     exactly `AgentOrgActingNode: <child-id>`, so enforcement can attribute the child's writes to it.
+     Aggregate the results; you **never do a child's work yourself** — you write only your shared set /
+     seams. Where you can, **plan first**: map each intended change to its owning child and dispatch each
+     child only the paths it owns, so cross-domain writes are prevented rather than corrected.
    - **Leaf** → execute directly, but **only inside your `domain`** (see the hard rule below).
 3. **Isolate.** Every run, work in your own `.worktrees/<your-id>/<run-id>/` and write nowhere else —
    **always required**, not only when a sibling may run concurrently.

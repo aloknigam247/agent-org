@@ -21,10 +21,11 @@ Run from the repository root (PowerShell):
    if (-not $plugin) { throw "agent-org plugin not found under $base\installed-plugins" }
    ```
 
-2. **Copy the runtime tools and seed defs into the repo** (skip any that already exist):
+2. **Copy the runtime tools, seed defs, and enforcement extension into the repo** (skip existing):
    ```pwsh
-   New-Item -ItemType Directory -Force -Path .github\tools, .github\agents, .github\instructions | Out-Null
+   New-Item -ItemType Directory -Force -Path .github\tools, .github\agents, .github\instructions, .github\extensions | Out-Null
    Copy-Item (Join-Path $plugin "tools\*") .github\tools\ -Recurse -Force
+   Copy-Item (Join-Path $plugin "extensions\*") .github\extensions\ -Recurse -Force
    Get-ChildItem (Join-Path $plugin "agents") -Filter *.md | ForEach-Object {
      $d = Join-Path ".github\agents" $_.Name; if (-not (Test-Path $d)) { Copy-Item $_.FullName $d }
    }
@@ -47,18 +48,26 @@ Run from the repository root (PowerShell):
 4. **Git-exclude the overlay** (local only, never committed), idempotently:
    ```pwsh
    $exclude = ".git\info\exclude"
-   $lines = @("/org.json", "/.github/tools/", "/.github/agents/", "/.github/instructions/", "/.worktrees/")
+   $lines = @("/org.json", "/.github/tools/", "/.github/agents/", "/.github/instructions/", "/.github/extensions/", "/.worktrees/")
    $have = if (Test-Path $exclude) { Get-Content $exclude } else { @() }
    foreach ($l in $lines) { if ($have -notcontains $l) { Add-Content -LiteralPath $exclude -Value $l } }
    ```
 
-5. **Install the containment hook** (user-level, so it fires in headless `-p` — plugin-contributed
-   hooks do not). Guarded to no-op outside agent-org repos, so it is safe globally:
+5. **Install the enforcement hooks** (user-level, so they fire in headless `-p` — plugin-contributed
+   hooks and extensions do not; the extension copied in step 2 is the interactive host, these command
+   hooks are the proven fallback). Both no-op outside an agent-org repo, so they are safe globally:
    ```pwsh
    $hooks = Join-Path $base "hooks"; New-Item -ItemType Directory -Force -Path $hooks | Out-Null
-   $ps = 'if (Test-Path .github\tools\owner_validator.py) { python .github\tools\owner_validator.py --hook --org org.json } else { ''{"permissionDecision":"allow"}'' }'
-   $bash = 'if [ -f .github/tools/owner_validator.py ]; then python .github/tools/owner_validator.py --hook --org org.json; else echo "{\"permissionDecision\":\"allow\"}"; fi'
-   $hook = @{ version = 1; hooks = @{ preToolUse = @(@{ type = 'command'; powershell = $ps; bash = $bash; timeoutSec = 20 }) } }
+   $ov = 'python .github\tools\owner_validator.py'
+   $rec = "if (Test-Path .github\tools\owner_validator.py) { $ov --record-acting }"     # userPromptSubmitted
+   $warn = "if (Test-Path .github\tools\owner_validator.py) { $ov --hook --mode warn --org org.json } else { '{""permissionDecision"":""allow""}' }"
+   $ovb = 'python .github/tools/owner_validator.py'
+   $recb = "if [ -f .github/tools/owner_validator.py ]; then $ovb --record-acting; fi"
+   $warnb = "if [ -f .github/tools/owner_validator.py ]; then $ovb --hook --mode warn --org org.json; else echo '{\""permissionDecision\"":\""allow\""}'; fi"
+   $hook = @{ version = 1; hooks = @{
+     userPromptSubmitted = @(@{ type = 'command'; powershell = $rec;  bash = $recb;  timeoutSec = 20 })
+     preToolUse          = @(@{ type = 'command'; powershell = $warn; bash = $warnb; timeoutSec = 20 })
+   } }
    $hook | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $hooks 'agent-org.json') -Encoding utf8
    ```
 
