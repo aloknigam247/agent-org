@@ -198,7 +198,8 @@ def test_custom_root_is_rendered_without_default_agent(repo):
     definition = (repo / ".github" / "agents" / "product-root.md").read_text(encoding="utf-8")
     assert "name: product-root\n" in definition
     assert "loop: .github/agent-org/loops/leaf.md\n" in definition
-    assert "explicitly read" in definition
+    assert r".github\agents\product-root.md" in definition
+    assert "then read and follow that file" in definition
     assert "does not automatically load" in definition
     assert (PLUGIN / "seed" / "org.json").read_bytes() == original_seed
 
