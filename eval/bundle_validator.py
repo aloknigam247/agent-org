@@ -1,4 +1,4 @@
-"""bundle-integrity validator: the deterministic self-ownership checks (design §3.7 SO2–SO6).
+"""Eval-only bundle integrity and freshness checks.
 
 Given a repo root and its ``org.json``, verify the static bundle invariants that need no agent judgement:
 
@@ -9,8 +9,7 @@ Given a repo root and its ``org.json``, verify the static bundle invariants that
 - **Freshness (partial)** — an artifact's ``sources`` front-matter must resolve to existing files
   (dangling refs are caught; the "sources-changed ⇒ re-touched" half needs a diff and lives elsewhere).
 
-Front-matter is the leading ``---`` YAML-ish block; parsed minimally (``owner:`` scalar, ``sources:``
-list) so this tool keeps the kernel-tools dependency surface at zero.
+These checks are called by eval preflight and grading, not by the installed plugin.
 """
 
 from __future__ import annotations
@@ -20,7 +19,9 @@ import json
 import sys
 from pathlib import Path
 
-BUNDLE_KINDS = ("wiki", "skills", "tools")
+import yaml
+
+BUNDLE_KINDS = ("skills", "tools", "wiki")
 
 
 def _front_matter(text: str) -> dict:
@@ -114,6 +115,33 @@ def check_freshness(root, changed_paths) -> dict:
                 violations.append({"rule": "freshness", "path": rel,
                                    "evidence": f"sources changed {changed_sources} but not re-touched"})
     return {"status": "ok" if not violations else "violations", "violations": violations, "checked": checked}
+
+
+def check_agent_roles(org, root):
+    problems = []
+    for node in org["nodes"]:
+        file = Path(root) / ".github" / "agents" / f"{node['id']}.md"
+        if not file.exists():
+            problems.append(f"missing agent definition for {node['id']}")
+            continue
+        text = file.read_text(encoding="utf-8")
+        header = text.split("---", 2)
+        try:
+            fields = yaml.safe_load(header[1]) if len(header) == 3 and not header[0].strip() else {}
+        except yaml.YAMLError as error:
+            problems.append(f"invalid agent definition {node['id']}: {error}")
+            continue
+        loop = fields.get("loop", "") if isinstance(fields, dict) else ""
+        expected = f".github/agent-org/loops/{node['mode'].lower()}.md"
+        if not isinstance(loop, str) or loop.replace("\\", "/") != expected:
+            problems.append(f"{node['id']} must reference {expected}")
+        elif not (Path(root) / loop).is_file():
+            problems.append(f"missing loop file for {node['id']}")
+    return problems
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Eval-only agent-org bundle checks")
     parser.add_argument("--org", default="org.json", help="path to org.json")
     parser.add_argument("--root", default=".", help="repo root")
     args = parser.parse_args(argv)

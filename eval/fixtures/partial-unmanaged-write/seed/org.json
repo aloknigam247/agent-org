@@ -1,0 +1,13 @@
+{
+  "version": 3,
+  "root": "caretaker",
+  "nodes": [
+    {
+      "id": "caretaker", "parent": null, "children": [], "mode": "Leaf",
+      "charter": { "domain": ["managed/**"], "concerns": ["managed area"], "excludes": [] }
+    }
+  ],
+  "collaboration": "hybrid",
+  "scope": ["managed/**"],
+  "storage": "local"
+}

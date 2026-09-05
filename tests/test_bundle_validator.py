@@ -1,8 +1,5 @@
 #!/usr/bin/env python
-"""Self-tests for the bundle-integrity validator (SO2-SO6). Fresh scenarios, no agent calls.
-
-Run: ``python .github/tools/test_bundle_validator.py`` — one-line summary, non-zero exit on failure.
-"""
+"""Eval-only bundle metadata and freshness scenarios."""
 
 from __future__ import annotations
 
@@ -11,11 +8,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
 import bundle_validator as bv  # noqa: E402
 
 CASES = []
 _DIRS = []
+
+
+@pytest.fixture(autouse=True)
+def cleanup_sandboxes():
+    yield
+    for directory in _DIRS:
+        directory.cleanup()
+    _DIRS.clear()
 
 
 def case(fn):
@@ -32,8 +39,9 @@ ORG = {"version": 3, "root": "root", "nodes": [
 def repo(files):
     """A repo tree with the given files (rel->content). Agent-defs for all live nodes are added unless
     a `.github/agents/<id>.md` is explicitly overridden in `files`."""
-    d = Path(tempfile.mkdtemp(prefix="bvt-"))
-    _DIRS.append(d)
+    directory = tempfile.TemporaryDirectory(prefix="bvt-")
+    _DIRS.append(directory)
+    d = Path(directory.name)
     for nid in ("root", "a", "b"):
         p = d / ".github" / "agents" / f"{nid}.md"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -117,24 +125,6 @@ def freshness_ok_when_source_unchanged():
     assert r["status"] == "ok", r
 
 
-def _main():
-    failed = 0
-    try:
-        for fn in CASES:
-            try:
-                fn()
-            except AssertionError as exc:
-                failed += 1
-                print(f"FAIL {fn.__name__}: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
-    finally:
-        for d in _DIRS:
-            shutil.rmtree(d, ignore_errors=True)
-    print(f"{len(CASES) - failed}/{len(CASES)} passed")
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    sys.exit(_main())
+@pytest.mark.parametrize("scenario", CASES, ids=lambda scenario: scenario.__name__)
+def test_bundle_scenarios(scenario):
+    scenario()

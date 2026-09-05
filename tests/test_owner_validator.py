@@ -1,14 +1,5 @@
 #!/usr/bin/env python
-"""Fresh, independent self-tests for the owner-oracle (owner_validator).
-
-The scenarios are deliberately unrelated to the design's canonical examples, so a green run proves the
-oracle's *semantics* rather than re-asserting an example it was modelled on. Pure functions only (no
-git, no filesystem): each test builds a tiny in-memory org and checks ownership, coverage, tree, and
-containment directly.
-
-Run: ``python .github/tools/test_owner_validator.py`` — prints a one-line summary and exits non-zero if
-any case fails.
-"""
+"""Independent oracle scenarios, collected individually by pytest."""
 
 from __future__ import annotations
 
@@ -20,12 +11,22 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
 import owner_validator as ov  # noqa: E402
 
 TOOL = Path(__file__).resolve().parent.parent / "plugin" / "tools" / "owner_validator.py"
 CASES = []
 _DIRS = []
+
+
+@pytest.fixture(autouse=True)
+def cleanup_sandboxes():
+    yield
+    for directory in _DIRS:
+        directory.cleanup()
+    _DIRS.clear()
 
 
 def case(fn):
@@ -36,8 +37,9 @@ def case(fn):
 def git_repo(files, org_dict):
     """A hermetic git repo with `files` (rel->content) plus org.json, committed — for git_tracked /
     domain_size / CLI tests."""
-    d = Path(tempfile.mkdtemp(prefix="ovt-"))
-    _DIRS.append(d)
+    directory = tempfile.TemporaryDirectory(prefix="ovt-")
+    _DIRS.append(directory)
+    d = Path(directory.name)
     (d / "org.json").write_text(json.dumps(org_dict), encoding="utf-8")
     for rel, content in files.items():
         p = d / rel
@@ -427,7 +429,7 @@ def hook_allows_owned_write_no_foreign():
 def hook_warn_allows_but_flags_foreign():
     d, f = ov.hook_decision(_payload("edit", "/repo/b/x.py"), _HOOK_ORG, mode="warn", acting="a")
     assert d["permissionDecision"] == "allow", d          # warn: write is allowed (content preserved)
-    assert f == {"path": "b/x.py", "owner": "b", "acting": "a"}, f
+    assert f == {"path": "b/x.py", "owner": "b", "acting": "a", "disposition": "warn"}, f
 
 
 @case
@@ -453,21 +455,19 @@ def hook_allows_non_write_tool():
 
 
 @case
-def hook_derives_acting_from_worktree_path():
-    ok, f1 = ov.hook_decision(_payload("create", "/repo/.worktrees/a/run1/a/x.py"), _HOOK_ORG,
-                              mode="enforce", acting="zzz")  # wrong env ignored; path says 'a'
-    assert ok["permissionDecision"] == "allow" and f1 is None, (ok, f1)
-    bad, f2 = ov.hook_decision(_payload("create", "/repo/.worktrees/a/run1/b/y.py"), _HOOK_ORG,
-                               mode="enforce", acting="zzz")
-    assert bad["permissionDecision"] == "deny" and f2["owner"] == "b", (bad, f2)
+def hook_never_infers_actor_from_shared_worktree_name():
+    payload = _payload("create", r"D:\repo\.worktrees\a\b\new.txt", r"D:\repo\.worktrees\a")
+    decision, foreign = ov.hook_decision(payload, _HOOK_ORG, acting="root")
+    assert decision["permissionDecision"] == "deny"
+    assert foreign["acting"] == "root" and foreign["owner"] == "b"
 
 
 @case
-def hook_without_acting_flags_only_unowned():
+def hook_without_acting_reports_missing_identity():
     owned, f1 = ov.hook_decision(_payload("create", "/repo/b/x.py"), _HOOK_ORG, acting=None)
-    assert owned["permissionDecision"] == "allow" and f1 is None, (owned, f1)  # containment uncheckable
+    assert owned["permissionDecision"] == "deny" and "identity" in owned["permissionDecisionReason"]
     unowned, f2 = ov.hook_decision(_payload("create", "/repo/z/x"), _HOOK_ORG, acting=None)
-    assert f2 is not None and f2["owner"] is None, f2
+    assert unowned["permissionDecision"] == "deny"
 
 
 # --- in-place identity: record_acting (userPromptSubmitted) + preToolUse resolves + logs foreign -----
@@ -489,7 +489,7 @@ def hook_cli_warn_allows_and_logs_foreign():
     p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / "org.json")],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout   # warn = allow
-    log = repo / ".git" / "agent-org" / "foreign" / "a.jsonl"   # keyed by the acting node 'a'
+    log = repo / ".git" / "agent-org" / "foreign" / "S2" / "S2.jsonl"
     assert log.exists(), "foreign write must be logged"
     entry = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
     assert entry["path"] == "b/x.py" and entry["owner"] == "b" and entry["acting"] == "a", entry
@@ -509,12 +509,13 @@ def hook_cli_enforce_denies_foreign():
 @case
 def hook_cli_allows_when_no_org():
     # a non-agent-org repo (no org.json) must never be disturbed by the plugin hook
-    d = Path(tempfile.mkdtemp(prefix="noorg-"))
-    _DIRS.append(d)
+    directory = tempfile.TemporaryDirectory(prefix="noorg-")
+    _DIRS.append(directory)
+    d = Path(directory.name)
     pl = json.dumps(_payload("create", str(d / "anything.txt"), str(d)))
     p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(d / "org.json")],
                        input=pl, capture_output=True, text=True)
-    assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout
+    assert json.loads(p.stdout) == {}, p.stdout
 
 
 # --- usage log + split-advice (parent's over-burden signal) -----------------------------------------
@@ -547,24 +548,6 @@ def usage_record_cli_appends_log():
     assert log.exists() and json.loads(log.read_text(encoding="utf-8").splitlines()[0])["tokens"] == 150000
 
 
-def run():
-    failed = 0
-    try:
-        for fn in CASES:
-            try:
-                fn()
-            except AssertionError as exc:
-                failed += 1
-                print(f"FAIL {fn.__name__}: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
-    finally:
-        for d in _DIRS:
-            shutil.rmtree(d, ignore_errors=True)
-    print(f"{len(CASES) - failed}/{len(CASES)} passed")
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    sys.exit(run())
+@pytest.mark.parametrize("scenario", CASES, ids=lambda scenario: scenario.__name__)
+def test_oracle_scenarios(scenario):
+    scenario()

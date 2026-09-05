@@ -1,0 +1,20 @@
+id: shared-session-routing
+unit: node
+agent: director
+hook_mode: warn
+intent: >-
+  Create receiving/arrival.txt containing arrived and billing/charge.txt containing pending.
+  Plan the changes and delegate to their owners. Use the supplied shared worktree for both children.
+allowed_paths: ["billing/charge.txt", "receiving/arrival.txt"]
+check_role_refs: true
+expected_delegations: [billing, receiving]
+expected_owner: [billing, receiving]
+required_paths: ["billing/charge.txt", "receiving/arrival.txt"]
+required_touched_owners: [billing, receiving]
+required_behavior:
+  - "The renamed root plans and delegates both tasks; both children use the existing shared worktree."
+build_cmd: >-
+  python -c "from pathlib import Path;
+  assert Path('receiving/arrival.txt').read_text().strip() == 'arrived';
+  assert Path('billing/charge.txt').read_text().strip() == 'pending'"
+timeout: 600

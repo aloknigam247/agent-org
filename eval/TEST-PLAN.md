@@ -1,72 +1,45 @@
-# agent-org eval — test plan
+# Evaluation test plan
 
-How the agent org is verified across its two pillars — **self-ownership** and **agent reliability** —
-and its **substrate** (ownership oracle, routing/delegation, splitting, worktree isolation). The
-executable self-tests and fixtures are the living source of truth for *what* is covered; this file is
-the strategy and the standing gaps.
+Run commands and result semantics are in [README.md](README.md). Fixtures use independent domains rather than the
+design's examples. Deterministic failures must be resolved before interpreting agent-run results.
 
-## Layers
+## Required scenarios
 
-- **L0 — harness correctness** (deterministic). The runner must not manufacture false verdicts. Grades
-  are fail-closed; see the harness tests in `eval/test_graders.py`.
-- **L1 — ownership oracle** (deterministic). Glob dialect, coverage, tree invariants, containment,
-  domain-size, split-transition, CLI contracts — `.github/tools/test_owner_validator.py`.
-- **L2 — deterministic validators.** Split transitions (`owner_validator.check_split`) and bundle
-  integrity (`.github/tools/bundle_validator.py`, tests `test_bundle_validator.py`); worktree lifecycle
-  (`.github/tools/worktree.py`, tests `test_worktree.py`).
-- **L3 — agent fixtures** (stochastic, needs model quota). Real `copilot -p` runs graded over N
-  repeats; fixtures under `eval/fixtures/`, run via `eval/run.py` (see `eval/README.md`).
+| Behavior | Deterministic coverage | Agent scenario |
+| --- | --- | --- |
+| Bootstrap on an existing repo without overwriting work | `tests/test_bootstrap.py` | Bootstrap skill adoption |
+| Full/partial scope combined with agent-only/hybrid collaboration | Bootstrap combinations and `tests/test_runtime_policy.py` | `partial-unmanaged-write` |
+| Renamed root and selected instruction profiles | Bootstrap output and command construction | `shared-session-routing`, `host-entry` |
+| Parent denied direct or deeper descendant writes | Relationship matrix, multi-file patch checks, denied-audit grader | `parent-descendant-denied` |
+| Leaf sibling/cousin/ancestor writes warned and recorded | Relationship matrix, completed-write audit checks | `foreign-write-warn` |
+| Unmanaged paths allowed; managed gaps still rejected | Scope and coverage assertions | `partial-unmanaged-write` |
+| Stable scope through a split; valid role promotion | Split-transition and role-reference checks | Splitter scenarios |
+| One worktree reused by a root and all descendants | `tests/test_worktree.py`, hook context propagation | `shared-session-routing` |
+| Parallel root sessions isolated; integration serialized | Worktree lifecycle, lock contention, conflict preservation | Concurrent root runs |
+| Hybrid changes between runs detected without reassigning ownership | Source snapshots, added/modified/deleted path checks | Hybrid orientation |
+| Eval-only bundle validation never installed | Bootstrap/package assertions; `tests/test_bundle_validator.py` | Fixture preflight |
+| Session identity survives shared-worktree execution | Marker parsing, task injection, extension adapter tests | Child tool calls |
+| Concurrent same-role sessions never share audit records accidentally | Run/session audit partition tests | Parallel child calls |
+| Correct final files do not hide absent delegation | Grader and advisory-trajectory assertions | `routing-to-child`, `shared-session-routing` |
 
-Run all deterministic suites (no quota):
+## Evidence boundaries
 
-```pwsh
-python .github/tools/test_owner_validator.py
-python .github/tools/test_bundle_validator.py
-python .github/tools/test_worktree.py
-python eval/test_graders.py
-```
+- **State:** Capture the baseline-to-final diff, including committed, staged, unstaged, untracked, and renamed paths.
+  Reject no-op results when the fixture requires changes. Keep baseline ownership separate from final validation.
+- **Policy:** Assert both a denied attempt and an unchanged target when testing prevention. Assert successful output
+  and a completed audit record when testing warning mode. Foreign records must match the actor, owner, and run.
+- **Roles:** Promoting a Leaf changes its agent definition's `loop:` reference to the Parent file; generated children
+  reference the Leaf file. Check the referenced files exist, not just their names.
+- **Isolation:** A shared worktree separates root sessions, not siblings within one session. The root must avoid
+  overlapping sibling writes and wait for children before integration. Do not attribute writers by path.
+- **Hybrid:** Compare content to the last reconciled snapshot, not merely `HEAD`; human changes may already be committed.
+  A scan reports drift. Only explicit reconciliation/checkpointing accepts the new baseline.
+- **Extensions:** Exercise the adapter's callback handling and Python policy bridge without claiming this proves
+  registration or event delivery in an interactive Copilot session.
+- **Live results:** Retain fixture, model, effort, run identity, outcomes, and errors. A small successful sample is
+  evidence for those runs, not a universal reliability guarantee.
 
-## Principles
+## Further integration coverage
 
-- **Fail closed.** A crashed, timed-out, or no-op run never passes. Every mutation fixture declares an
-  expected effect (`required_paths` / `required_touched_owners` / `expected_no_changes`); a refuse/reject
-  case declares `expected_no_changes: true`.
-- **Baseline vs final.** Ownership is attributed with the immutable seed `org.json` the agent was given;
-  coverage is validated on the run's final `org.json`. An agent cannot grade itself by rewriting ownership.
-- **Capture everything.** The change set is the full diff from the baseline commit — committed, staged,
-  unstaged, and untracked — NUL- and rename-safe.
-- **Fixtures valid and unbiased.** Every seed passes `org.schema.json` and preflight (clean baseline
-  coverage, agent exists with a def, bundle integrity, and — for a mutation fixture — `build_cmd` fails
-  on the untouched seed). Scenarios are fresh, independent of the design's own examples.
-- **Gradeability is explicit.** Each check is a *deterministic gate*, an advisory *trajectory signal*, or
-  an advisory *LLM-judge rubric*. Advisory signals never change pass/fail.
-- **Deterministic first.** L0–L2 need no quota and gate the meaning of every L3 number; quota is never a
-  reason to defer them.
-
-## Invariant traceability (design §5 / §3.7)
-
-| Invariant | Where verified |
-| --- | --- |
-| Coverage — exactly one owner; parent shared-set never `**` | oracle coverage + tree tests |
-| Delegation (scatter-gather) — parent invokes the owning child | trajectory `delegated_to` (L3, quota) |
-| Hardcoded entry — Host → `main` | `host-entry` fixture via host-mode (L3, quota) |
-| Single-writer / no orphan / freshness (SO3/SO6/SO5) | bundle-integrity tests |
-| Worktree isolation + serialized integration (§2.5) | worktree lifecycle tests |
-| Growth — valid split; invalid split rejected | split-transition tests + `invalid-split-rejection` |
-
-## Standing gaps
-
-**Quota-gated (logic locked deterministically; only the agent runs remain):**
-
-- Delegation actually happens (`routing-to-child`): parent fires a `task` call to the owning child.
-- Leaf stays in domain (`foreign-path-containment`): the leaf refuses a foreign write and surfaces it.
-- Splitter rejects an invalid split cleanly (`invalid-split-rejection`).
-- Host → `main` entry (`host-entry`, host-mode).
-- Re-baseline the behavioral corpus on the hardened harness for trustworthy pass-rates.
-
-**Deferred (no current need):**
-
-- Seam / contract atomicity (SO4) — no seams exist until a coupled split.
-- Deep/wide and adversarial routing fixtures — add when a multi-level tree exists.
-- Worktree isolation *by the agent* — the substrate is enforced by the runner; agent compliance is an
-  L3 concern.
+Parent reconciliation across a common ancestor, atomic seam changes, and live interactive extension delivery require
+their own end-to-end evidence. Unit tests, a logged attempt, or a successful file assertion alone do not establish them.

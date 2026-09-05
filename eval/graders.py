@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import owner_validator as ov  # noqa: E402
 import bundle_validator as bv  # noqa: E402
 
@@ -29,7 +30,7 @@ _UNCHANGED = object()
 
 
 def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed_out=False,
-          final_org=_UNCHANGED):
+          final_org=_UNCHANGED, run_id=None, trajectory=None):
     """Grade a run. Ownership is attributed with the immutable baseline `org` the agent was given
     (routing/containment), while coverage validates the run's `final_org` (the post-run tree). A
     missing/unparseable final org (final_org is None) fails coverage rather than crashing."""
@@ -46,6 +47,8 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
     expected = set(manifest.get("expected_owner") or [])
     acted, unowned, overlapped = set(), [], []
     for path in changed_paths:
+        if not ov.managed(org, path):
+            continue
         hits = ov.owners_of(compiled, path)
         if len(hits) == 1:
             acted.add(hits[0])
@@ -98,16 +101,36 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
         checks.append({"check": "coverage", "result": "pass" if cov["status"] == "ok" else "fail",
                        "evidence": cov["violations"][:5]})
 
-    # containment — a leaf must keep every change in its own domain; a parent legitimately routes across
-    # its subtree, so routing/paths/coverage validate it instead (a single-owner check would false-fail).
-    # A warn-mode fixture (expected_foreign) intentionally allows foreign writes, so foreign_log is the
-    # assertion there and containment is skipped.
-    acting = manifest.get("agent", "main")
+    if isinstance(final, dict):
+        config_changes = [
+            field for field, default in (
+                ("collaboration", "agents"), ("root", None), ("scope", ["**"]), ("storage", "local")
+            ) if org.get(field, default) != final.get(field, default)
+        ]
+        checks.append({"check": "configuration", "result": "fail" if config_changes else "pass",
+                       "evidence": config_changes})
+        if manifest.get("unit") == "splitter" and final != org:
+            split = ov.check_split(org, final, ov.git_tracked(sandbox))
+            checks.append({"check": "split_transition",
+                           "result": "pass" if split["status"] == "ok" else "fail",
+                           "evidence": split["violations"]})
+
+    acting = manifest.get("agent", org.get("root"))
     acting_node = {n["id"]: n for n in org.get("nodes", [])}.get(acting)
-    if acting_node and not acting_node.get("children") and changed_paths and not manifest.get("expected_foreign"):
+    if acting_node and not acting_node.get("children") and changed_paths:
         con = ov.check_containment(org, acting, changed_paths)
-        checks.append({"check": "containment", "result": "pass" if con["status"] == "ok" else "fail",
-                       "evidence": con["violations"][:5]})
+        unexpected = [
+            violation for violation in con["violations"]
+            if not any(
+                manifest.get("hook_mode", "warn") == "warn"
+                and expected.get("acting", acting) == acting
+                and expected.get("owner") == violation.get("owner")
+                and _match_any([expected["path"]], violation.get("path", ""))
+                for expected in manifest.get("expected_foreign", [])
+            )
+        ]
+        checks.append({"check": "containment", "result": "fail" if unexpected else "pass",
+                       "evidence": unexpected[:5]})
 
     # freshness (SO5) — if the run changed a file a bundle artifact cites as a source, it must re-touch
     # the artifact. Only appended when such an artifact exists (applicable), so it stays out of the way.
@@ -116,24 +139,36 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
         checks.append({"check": "freshness", "result": "pass" if fresh["status"] == "ok" else "fail",
                        "evidence": fresh["violations"][:5]})
 
-    # foreign-log (warn-mode enforcement) — assert the containment hook logged the expected out-of-domain
-    # writes to .git/agent-org/foreign/<acting>.jsonl. Declared by expected_foreign: [{path, owner}].
-    expected_foreign = manifest.get("expected_foreign")
-    if expected_foreign:
-        logged = []
-        fdir = Path(sandbox) / ".git" / "agent-org" / "foreign"
-        if fdir.exists():
-            for f in fdir.glob("*.jsonl"):
-                for line in f.read_text(encoding="utf-8").splitlines():
-                    try:
-                        logged.append(json.loads(line))
-                    except Exception:
-                        pass
-        missing = [e for e in expected_foreign
-                   if not any(_match_any([e["path"]], g.get("path", "")) and g.get("owner") == e.get("owner")
-                              for g in logged)]
-        checks.append({"check": "foreign_log", "result": "pass" if not missing else "fail",
-                       "evidence": f"missing={missing} logged={[g.get('path') for g in logged]}"})
+    for field, check, disposition, phase in (
+        ("expected_denied", "denied_writes", "deny", "attempted"),
+        ("expected_foreign", "foreign_log", "warn", "completed"),
+    ):
+        expected_records = manifest.get(field)
+        if expected_records is None:
+            continue
+        try:
+            logged = ov.foreign_records(sandbox, run_id)
+        except (OSError, ValueError) as error:
+            checks.append({"check": check, "result": "fail", "evidence": f"invalid audit log: {error}"})
+            continue
+        relevant = [r for r in logged if r.get("disposition") == disposition and r.get("phase") == phase]
+        missing = [
+            expected for expected in expected_records
+            if not any(
+                _match_any([expected["path"]], record.get("path", ""))
+                and record.get("owner") == expected.get("owner")
+                and record.get("acting") == expected.get("acting", acting)
+                and record.get("sessionId")
+                for record in relevant
+            )
+        ]
+        unexpected_empty = not expected_records and relevant
+        checks.append({"check": check, "result": "fail" if missing or unexpected_empty else "pass",
+                       "evidence": {"missing": missing, "records": relevant}})
+
+    if manifest.get("check_role_refs"):
+        roles = bv.check_agent_roles(final, sandbox) if isinstance(final, dict) else ["final org missing"]
+        checks.append({"check": "role_references", "result": "fail" if roles else "pass", "evidence": roles})
 
     # build/tests — optional objective outcome (timeout-bounded so a hung build fails, not stalls)
     build_cmd = manifest.get("build_cmd")

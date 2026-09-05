@@ -1,72 +1,42 @@
-# agent-org — a self-organizing agent-org kernel
+# agent-org
 
-`agent-org` turns an ordinary git repository into one that is **completely owned by agents**: a small
-tree of GitHub Copilot CLI custom agents that partition the repo, do the work, and maintain their own
-knowledge and automation.
+A self-organizing tree of GitHub Copilot CLI agents for a configurable area of an existing Git repository.
+Agents partition work, maintain useful knowledge and automation, and propose human-approved growth.
 
-This repository packages the kernel as an installable **GitHub Copilot CLI plugin** (under `plugin/`),
-plus the eval harness that tests it. Install the plugin, then bootstrap any git repo to adopt it.
+This plugin supports **Windows and PowerShell**. Managed scope, human collaboration, root name, and local or
+tracked storage are configured independently at bootstrap.
 
-## The two properties that define "ownership"
-
-1. **Coverage (spatial)** — every path in the repo is owned by exactly one *leaf* node. No orphans,
-   no overlaps. A parent owns only the **seams** (contracts) between its children.
-2. **Self-sufficiency (epistemic)** — every node externalizes what it needs to maintain its domain
-   without re-deriving it from source each time: a **wiki** (knowledge), **skills** (procedures),
-   and **tools** (automation).
-
-These properties are upheld **intrinsically**: the `splitter` preserves coverage on every atomic
-split, and nodes uphold self-sufficiency by discipline (the payback rule, single-writer, freshness).
-See the `agent-org-design` skill under `plugin/skills/`.
-
-The agents themselves are tested by an offline eval harness under `eval/` (see `eval/TEST-PLAN.md`).
-
-## Layout
-
-| Path | Role |
-| ---- | ---- |
-| `plugin/` | The installable Copilot CLI plugin (see **Install** below). |
-| `plugin/agents/*.md` | Seed agent defs: `main`, `splitter`, and `_node.template` for generated children. |
-| `plugin/skills/` | Law-as-skills (`agent-org-loop`, `agent-org-design`) and the `bootstrap` skill. |
-| `plugin/tools/` | The owner-oracle (`owner_validator.py`) plus the bundle and worktree validators. |
-| `plugin/hooks.json` | The pre-tool-use containment hook. |
-| `plugin/org.schema.json` | Structural schema for `org.json`. |
-| `eval/`, `tests/` | The kernel's own test bed — never shipped in the plugin. |
-
-A **bootstrapped** target repo gets `org.json` (live org state) plus a git-excluded `.github/` overlay
-(tools, seed agents, Host manual). At runtime, nodes also create — on demand, never speculatively —
-`wiki/` pages, `skills/` playbooks, and `tools/` scripts, each owned by exactly one node.
-
-## Roles
-
-- **Host** — the Copilot CLI session. Domain-less. Hardcodes the entry to `main` and gates splits to
-  the human. The `splitter` is the only writer of `org.json`.
-- **main** — the root node; owns the whole repo until the first split.
-- **splitter** — executes an approved split as one validated, git-committed transaction.
-
-## Install
-
-`agent-org` is a GitHub Copilot CLI plugin.
-
-**1 — Install the plugin**, from the repo's `plugin/` subdirectory or a local clone:
+## Install and adopt
 
 ```pwsh
-copilot plugin install aloknigam247/agent-org:plugin      # from GitHub
-# or, from a local clone:
-copilot plugin install ./agent-org/plugin
+copilot plugin install aloknigam247/agent-org:plugin
 ```
 
-Start a new session (or `/restart`) so it loads; confirm with `copilot plugin list`. The oracle needs
-**Python 3 with `pathspec`** on PATH (`pip install pathspec`; the bootstrap does this too).
+Start a new session and confirm installation with `copilot plugin list`. In the target repository, ask
+Copilot to run the agent-org **bootstrap** skill. It asks for your choices, checks for collisions, installs only
+the selected instruction profiles, and reports validation. It does not initialize Git, overwrite user files,
+stage changes, or modify global settings.
 
-**2 — Bootstrap your repo.** In the target git repo, ask Copilot to **run the agent-org bootstrap**
-(the `bootstrap` skill). It is **non-invasive** — everything it writes is added to `.git/info/exclude`,
-so it never appears in `git status` or gets committed. It:
+Follow the [bootstrap skill](plugin\skills\bootstrap\SKILL.md) for the complete setup procedure and installed
+layout. Configuration and compatibility defaults are defined in the [schema](plugin\org.schema.json).
 
-- creates `org.json` (root `main` owns the whole repo),
-- copies the tools into `.github/tools/` and installs the containment hook,
-- verifies coverage with the oracle.
+## Use
 
-**3 — Use it.** Work through the org: `main` routes or executes, the containment hook keeps every write
-inside the acting node's domain, and a node proposes a **gated** split when its domain grows too large.
-Growth is **one-way and human-approved** — nothing splits without your say-so, and nothing merges back.
+The Host resolves the configured root from the target's `org.json`. Each node explicitly reads a small Leaf or
+Parent operating file; both share one common core. The [full design](plugin\skills\agent-org-design\SKILL.md) is
+an on-demand reference, not mandatory task context.
+
+The root creates one session worktree and passes its path to all descendants. Parents delegate descendant-owned
+implementation and reconcile foreign changes before root integration. See the
+[operating files](plugin\skills\agent-org-loop\SKILL.md) and [runnable tool commands](plugin\tools\README.md).
+
+Hooks classify explicit file-tool paths; they are not a security boundary for arbitrary shell writes. Shared
+worktrees isolate root sessions, not sibling operations, and do not prove child authorship. Runtime helpers and
+written rules must be distinguished from verified behavior in the actual Copilot execution mode.
+
+## Repository
+
+- `plugin\` is the installable kernel; `plugin\seed\org.json` is its canonical bootstrap seed, not live shared state.
+- `eval\` and `tests\` contain development validation, including the evaluation-only bundle validator.
+
+See the [evaluation guide](eval\README.md) and [test plan](eval\TEST-PLAN.md) for verification scope.

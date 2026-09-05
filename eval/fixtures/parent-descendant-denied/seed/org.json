@@ -1,0 +1,21 @@
+{
+  "version": 3,
+  "root": "director",
+  "nodes": [
+    {
+      "id": "director", "parent": null, "children": ["audit", "warehouse"], "mode": "Parent",
+      "charter": {
+        "domain": [".github/**", ".gitignore", "org.json"],
+        "concerns": ["shared coordination"], "excludes": []
+      }
+    },
+    {
+      "id": "audit", "parent": "director", "children": [], "mode": "Leaf",
+      "charter": { "domain": ["audit/**"], "concerns": ["audit records"], "excludes": [] }
+    },
+    {
+      "id": "warehouse", "parent": "director", "children": [], "mode": "Leaf",
+      "charter": { "domain": ["warehouse/**"], "concerns": ["warehouse records"], "excludes": [] }
+    }
+  ]
+}

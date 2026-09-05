@@ -20,11 +20,13 @@ more than one is ``overlap``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 try:  # pathspec >= 0.11 exposes GitIgnoreSpec; older versions use the from_lines factory.
@@ -89,6 +91,35 @@ def owners_of(compiled, path: str):
     return hits
 
 
+def managed(org, path):
+    """The managed scope survives splits; a Parent's retained domain is not the scope."""
+    return _match(_spec(org.get("scope", ["**"])), normalize(path))
+
+
+def ownership(org, path):
+    path = normalize(path)
+    hits = owners_of(compile_nodes(org.get("nodes", [])), path) if managed(org, path) else []
+    status = "owned" if len(hits) == 1 else "overlap" if hits else "unowned"
+    if not managed(org, path):
+        status = "unmanaged"
+    return {"path": path, "owner": hits[0] if len(hits) == 1 else None, "matches": hits, "status": status}
+
+
+def is_descendant(org, node_id, ancestor_id):
+    by_id = {n["id"]: n for n in org["nodes"]}
+    seen = set()
+    current = by_id.get(node_id)
+    while current and current.get("parent") is not None:
+        parent = current["parent"]
+        if parent == ancestor_id:
+            return True
+        if parent in seen:
+            raise ValueError("cycle in org ancestry")
+        seen.add(parent)
+        current = by_id.get(parent)
+    return False
+
+
 def check_tree(org):
     """Structural invariants: single root, valid back-references, arity, acyclicity, unique ids."""
     violations = []
@@ -111,6 +142,8 @@ def check_tree(org):
         nid = node["id"]
         kids = node.get("children", [])
         parent = node.get("parent")
+        if len(kids) != len(set(kids)):
+            violations.append({"rule": "tree", "node": nid, "evidence": "duplicate child id"})
         if parent is not None and parent not in by_id:
             violations.append({"rule": "tree", "node": nid, "evidence": f"unknown parent {parent}"})
         elif parent is not None and nid not in (by_id[parent].get("children") or []):
@@ -146,6 +179,8 @@ def check_coverage(org, paths):
     violations = []
     compiled = compile_nodes(org.get("nodes", []))
     for path in paths:
+        if not managed(org, path):
+            continue
         hits = owners_of(compiled, path)
         if len(hits) == 0:
             violations.append({"rule": "uncovered", "path": normalize(path), "evidence": "UNOWNED: matches no node's effective domain"})
@@ -165,6 +200,8 @@ def check_containment(org, acting, paths):
     violations = []
     compiled = compile_nodes(org.get("nodes", []))
     for path in paths:
+        if not managed(org, path):
+            continue
         hits = owners_of(compiled, path)
         if len(hits) == 0:
             violations.append({"rule": "uncovered", "path": normalize(path), "evidence": "UNOWNED: matches no node's effective domain"})
@@ -194,6 +231,9 @@ def check_split(old_org, new_org, paths=None):
         add(f"root changed: {old_org.get('root')} -> {new_org.get('root')}")
     if new_org.get("version") != (old_org.get("version", 0) + 1):
         add(f"version must bump by exactly 1: {old_org.get('version')} -> {new_org.get('version')}")
+    for field, default in (("collaboration", "agents"), ("scope", ["**"]), ("storage", "local")):
+        if old_org.get(field, default) != new_org.get(field, default):
+            add(f"a split must not change {field}")
 
     removed = [nid for nid in old_by if nid not in new_by]
     if removed:
@@ -206,6 +246,8 @@ def check_split(old_org, new_org, paths=None):
         add(f"a split turns exactly one Leaf into a Parent, found {sorted(targets)}")
         return {"status": "ok" if not violations else "violations", "violations": violations}
     target = targets[0]
+    if new_by[target].get("parent") != old_by[target].get("parent"):
+        add("split target was reparented", target)
 
     if len(added) < 2:
         add(f"a split adds >= 2 new children, found {len(added)}")
@@ -228,6 +270,8 @@ def check_split(old_org, new_org, paths=None):
         old_c, new_c = compile_nodes(old_org.get("nodes", [])), compile_nodes(new_org.get("nodes", []))
         allowed_new = {target, *added}
         for path in paths:
+            if not managed(old_org, path):
+                continue
             oo, no = owners_of(old_c, path), owners_of(new_c, path)
             o1 = oo[0] if len(oo) == 1 else None
             if o1 == target:
@@ -238,24 +282,38 @@ def check_split(old_org, new_org, paths=None):
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 
+def git_output(root, *args):
+    return subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout
+
+
+def git_root(cwd):
+    result = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if result.returncode:
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def git_common_dir(root):
+    return Path(git_output(root, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve()
+
+
 def git_tracked(root):
     """Tracked plus untracked-non-ignored files (forward-slash), so a just-created unowned file is
     caught rather than silently missed (design §2.7)."""
-    out = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [normalize(line) for line in out.stdout.splitlines() if line.strip()]
+    out = git_output(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    return sorted({normalize(name) for name in out.split("\0") if name})
 
 
-def git_changed(root):
-    """Paths changed vs HEAD plus untracked-non-ignored, for the integration gate."""
-    changed = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "HEAD"], capture_output=True, text=True, check=True)
-    untracked = subprocess.run(["git", "-C", str(root), "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True, check=True)
-    lines = changed.stdout.splitlines() + untracked.stdout.splitlines()
-    return [normalize(line) for line in lines if line.strip()]
+def git_changed(root, baseline="HEAD"):
+    """Include committed and working changes, with both rename endpoints and untracked files."""
+    changed = git_output(root, "diff", "--name-only", "-z", "--no-renames", baseline)
+    untracked = git_output(root, "ls-files", "-z", "--others", "--exclude-standard")
+    return sorted({normalize(name) for name in (changed + untracked).split("\0") if name})
 
 
 def domain_size(org, acting, root):
@@ -264,20 +322,61 @@ def domain_size(org, acting, root):
     compiled = compile_nodes(org.get("nodes", []))
     owned, total_bytes = [], 0
     for path in git_tracked(root):
+        if not managed(org, path):
+            continue
         hits = owners_of(compiled, path)
         if len(hits) == 1 and hits[0] == acting:
             owned.append(path)
-            try:
-                total_bytes += (Path(root) / path).stat().st_size
-            except OSError:
-                pass
+            file = Path(root) / path
+            if file.is_file():
+                total_bytes += file.stat().st_size
     return {"node": acting, "files": len(owned), "bytes": total_bytes, "est_tokens": total_bytes // 4}
 
 
-# pre-tool-use containment hook + the in-place identity / foreign-log machinery.
-HOOK_WRITE_TOOLS = {"create", "edit", "str_replace", "write", "apply_patch", "multi_edit"}
-_WT_RE = re.compile(r"\.worktrees/([^/]+)/[^/]+/(.+)")
-MARKER_RE = re.compile(r"AgentOrgActingNode:\s*(\S+)")
+def write_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4()}.tmp")
+    try:
+        temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _snapshot(org, root):
+    files = {}
+    for rel in git_tracked(root):
+        file = Path(root) / rel
+        if managed(org, rel) and file.is_file():
+            files[rel] = hashlib.sha256(file.read_bytes()).hexdigest()
+    return files
+
+
+def checkpoint(org, root):
+    write_json(git_common_dir(root) / "agent-org" / "checkpoint.json", _snapshot(org, root))
+
+
+def drift(org, root):
+    file = git_common_dir(root) / "agent-org" / "checkpoint.json"
+    if not file.exists():
+        return {"status": "uninitialized", "changes": [], "message": "No reconciled checkpoint exists yet."}
+    previous = json.loads(file.read_text(encoding="utf-8"))
+    current = _snapshot(org, root)
+    changes = []
+    for rel in sorted(previous.keys() | current.keys()):
+        if previous.get(rel) == current.get(rel):
+            continue
+        change = "added" if rel not in previous else "removed" if rel not in current else "modified"
+        changes.append({**ownership(org, rel), "change": change})
+    return {"status": "drift" if changes else "ok", "changes": changes}
+
+
+HOOK_WRITE_TOOLS = {
+    "apply_patch", "create", "delete", "edit", "multi_edit", "str_replace", "str_replace_editor", "write",
+}
+MARKER_RE = re.compile(r"\AAgentOrgActingNode:[ \t]*([a-z][a-z0-9-]*)[ \t]*(?:\r?\n|$)")
+STATE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*\Z")
 
 
 def _allow():
@@ -285,104 +384,198 @@ def _allow():
 
 
 def _state_dir(cwd, sub):
-    """The `.git/agent-org/<sub>/` state dir, shared across worktrees via --git-common-dir. Lives inside
-    `.git`, so it is never tracked (non-invasive). Returns None outside a git repo."""
-    try:
-        out = subprocess.run(["git", "-C", str(cwd or "."), "rev-parse", "--git-common-dir"],
-                             capture_output=True, text=True)
-    except Exception:
+    root = git_root(cwd or ".")
+    if root is None:
         return None
-    if out.returncode != 0:
-        return None
-    g = Path(out.stdout.strip())
-    if not g.is_absolute():
-        g = Path(cwd or ".") / g
-    d = g / "agent-org" / sub
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        return None
+    d = git_common_dir(root) / "agent-org" / sub
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
+def state_id(value):
+    if (
+        not isinstance(value, str)
+        or not STATE_ID_RE.fullmatch(value)
+        or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", value, re.IGNORECASE)
+    ):
+        raise ValueError("session and node state identifiers must contain only letters, digits and hyphens")
+    return value
+
+
+def prompt_context(prompt):
+    marker = MARKER_RE.match(prompt)
+    if marker is None:
+        return None
+    context = {"node": marker.group(1)}
+    for name, key in (
+        ("AgentOrgRunId", "run_id"),
+        ("AgentOrgWorktree", "worktree"),
+        ("ParentAgentSessionId", "parent_session_id"),
+    ):
+        match = re.search(rf"^{name}:[ \t]*(.+?)[ \t]*\r?$", prompt, re.MULTILINE)
+        if match:
+            context[key] = match.group(1)
+    for key in ("run_id", "parent_session_id"):
+        if key in context:
+            state_id(context[key])
+    if "worktree" in context:
+        context["worktree"] = str(Path(context["worktree"]).resolve())
+    return context
+
+
 def record_acting(payload):
-    """userPromptSubmitted hook: parse the parent-injected `AgentOrgActingNode: <id>` marker from the
-    prompt and persist sessionId -> node, so preToolUse can attribute in-place writes to the acting node
-    (in-place has no worktree path to attribute by)."""
     sid = payload.get("sessionId")
-    m = MARKER_RE.search(payload.get("prompt") or "")
-    if not (sid and m):
-        return
+    context = prompt_context(payload.get("prompt") or "")
+    if not sid or context is None:
+        return None
+    state_id(sid)
+    root = git_root(payload.get("cwd") or ".")
+    if root is None or not (root / "org.json").exists():
+        return None
+    org = json.loads((root / "org.json").read_text(encoding="utf-8"))
+    if context["node"] not in {n["id"] for n in org["nodes"]} | {"splitter"}:
+        raise ValueError(f"unknown acting node {context['node']!r}")
     d = _state_dir(payload.get("cwd"), "acting")
-    if d:
-        try:
-            (d / sid).write_text(m.group(1), encoding="utf-8")
-        except Exception:
-            pass
+    file = d / sid
+    if file.exists():
+        previous = json.loads(file.read_text(encoding="utf-8"))
+        for key in ("node", "parent_session_id", "run_id", "worktree"):
+            if key in previous and key in context and previous[key] != context[key]:
+                raise ValueError(f"a session cannot change its bound {key}")
+        context = {**previous, **context}
+    context.setdefault("run_id", sid)
+    write_json(file, context)
+    return context
 
 
-def _acting_from_map(payload):
+def _context_from_map(payload):
     sid = payload.get("sessionId")
     if not sid:
-        return None
+        return {}
+    state_id(sid)
     d = _state_dir(payload.get("cwd"), "acting")
     f = (d / sid) if d else None
     if f and f.exists():
+        return json.loads(f.read_text(encoding="utf-8"))
+    return {}
+
+
+def _acting_from_map(payload):
+    return _context_from_map(payload).get("node")
+
+
+def _write_paths(payload):
+    args = payload.get("toolArgs") or {}
+    if isinstance(args, str):
+        if payload.get("toolName") == "apply_patch" and args.startswith("*** Begin Patch"):
+            args = {"input": args}
+        else:
+            args = json.loads(args)
+    if not isinstance(args, dict):
+        raise ValueError("file-tool arguments must be an object")
+    paths = [args[key] for key in ("path", "file_path", "filename") if isinstance(args.get(key), str)]
+    for edit in args.get("edits", []):
+        if isinstance(edit, dict):
+            paths.extend(edit[key] for key in ("path", "file_path") if isinstance(edit.get(key), str))
+    if payload.get("toolName") == "apply_patch":
+        patch = args.get("input", args.get("patch", ""))
+        paths.extend(re.findall(r"^\*\*\* (?:Add File|Delete File|Update File|Move to): (.+)$", patch, re.MULTILINE))
+    return list(dict.fromkeys(paths))
+
+
+def classify_write(payload, org, mode="warn", acting=None, root=None):
+    if payload.get("toolName") not in HOOK_WRITE_TOOLS:
+        return _allow(), []
+    paths = _write_paths(payload)
+    if not paths:
+        return {"permissionDecision": "deny", "permissionDecisionReason": "agent-org: no file path to classify"}, []
+    cwd = Path(payload.get("cwd") or ".").resolve()
+    root = Path(root or cwd).resolve()
+    records, denied = [], []
+    for raw in paths:
+        target = Path(raw)
+        target = (target if target.is_absolute() else cwd / target).resolve()
         try:
-            return f.read_text(encoding="utf-8").strip() or None
-        except Exception:
-            return None
-    return None
+            rel = target.relative_to(root).as_posix()
+        except ValueError:
+            denied.append(f"{raw}: outside the session workspace")
+            continue
+        result = ownership(org, rel)
+        if result["status"] == "unmanaged":
+            continue
+        if acting not in {n["id"] for n in org["nodes"]} | {"splitter"}:
+            denied.append(f"{rel}: missing or invalid acting-node identity")
+            continue
+        owner = result["owner"]
+        if owner == acting:
+            continue
+        descendant = owner is not None and is_descendant(org, owner, acting)
+        disposition = "deny" if descendant or mode == "enforce" else "warn"
+        record = {"path": rel, "owner": owner, "acting": acting, "disposition": disposition}
+        records.append(record)
+        if descendant:
+            denied.append(f"{rel}: owned by descendant '{owner}'; '{acting}' must delegate")
+        elif mode == "enforce":
+            denied.append(f"{rel}: owned by '{owner}' (UNOWNED if null), not '{acting}'")
+    if denied:
+        return {"permissionDecision": "deny", "permissionDecisionReason": "agent-org: " + "; ".join(denied)}, records
+    return _allow(), records
 
 
 def hook_decision(payload, org, mode="warn", acting=None):
-    """Classify a preToolUse write. Returns (decision, foreign): `foreign` is {path, owner, acting} when
-    the write is UNOWNED or outside the acting node's domain, else None. `enforce` mode denies a foreign
-    write; `warn` mode allows it (so its content is preserved on disk for reroute) and the caller logs
-    `foreign`. The acting node comes from a `.worktrees/<id>/` path prefix, else the caller's `acting`."""
-    if (payload.get("toolName") or "") not in HOOK_WRITE_TOOLS:
-        return _allow(), None
-    args = payload.get("toolArgs") or {}
-    path = args.get("path") or args.get("file_path") or args.get("filename")
-    if not path:
-        return _allow(), None
-    try:
-        rel = normalize(os.path.relpath(path, payload.get("cwd") or "."))
-    except ValueError:  # different drive on Windows — outside the repo
-        return _allow(), None
-    if rel.startswith("../") or rel.startswith("/"):
-        return _allow(), None
-    m = _WT_RE.match(rel)
-    if m:
-        acting, rel = m.group(1), m.group(2)
-    hits = owners_of(compile_nodes(org.get("nodes", [])), rel)
-    owner = hits[0] if len(hits) == 1 else None
-    if owner is None:
-        foreign, reason = {"path": rel, "owner": None, "acting": acting}, \
-            f"agent-org: '{rel}' is UNOWNED or multiply-owned"
-    elif acting and owner != acting:
-        foreign, reason = {"path": rel, "owner": owner, "acting": acting}, \
-            f"agent-org: '{rel}' is owned by '{owner}', not the acting node '{acting}'"
-    else:
-        return _allow(), None
-    if mode == "enforce":
-        return {"permissionDecision": "deny", "permissionDecisionReason": reason}, foreign
-    return _allow(), foreign
+    """Single-path compatibility API; use classify_write to inspect a multi-file tool call."""
+    decision, records = classify_write(payload, org, mode, acting)
+    return decision, records[0] if records else None
 
 
-def _log_foreign(payload, foreign):
-    """Append a foreign write to `.git/agent-org/foreign/<acting-node>.jsonl` — keyed by the acting node
-    so the parent (which knows which child it dispatched) can read it at reconciliation without knowing
-    the child's session id. Falls back to the session id when the acting node is unknown."""
-    key = foreign.get("acting") or payload.get("sessionId") or "unknown"
+def _log_foreign(payload, foreign, context, phase):
+    sid = state_id(payload.get("sessionId") or "unattributed")
+    run_id = state_id(context.get("run_id") or sid)
     d = _state_dir(payload.get("cwd"), "foreign")
-    if d:
-        try:
-            entry = dict(foreign, sessionId=payload.get("sessionId"))
-            with (d / f"{key}.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass
+    if d is None:
+        raise ValueError("foreign writes can only be recorded inside a git repository")
+    target = d / run_id
+    target.mkdir(parents=True, exist_ok=True)
+    entry = dict(foreign, phase=phase, runId=run_id, sessionId=sid, tool=payload.get("toolName"))
+    with (target / f"{sid}.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(entry) + "\n")
+
+
+def foreign_records(root, session_id=None):
+    directory = _state_dir(root, "foreign")
+    if directory is None:
+        return []
+    if session_id:
+        directory = directory / state_id(session_id)
+    return [
+        json.loads(line)
+        for file in sorted(directory.rglob("*.jsonl"))
+        for line in file.read_text(encoding="utf-8").splitlines() if line
+    ]
+
+
+def _task_context(payload, org, context):
+    args = payload.get("toolArgs") or {}
+    target = args.get("agent_type")
+    nodes = {n["id"]: n for n in org["nodes"]}
+    if target not in nodes.keys() | {"splitter"}:
+        return {}
+    actor = context.get("node")
+    if actor in nodes and target in nodes and nodes[target]["parent"] != actor:
+        return {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"agent-org: '{actor}' must route via direct children or return to its parent",
+        }
+    sid = state_id(payload["sessionId"])
+    headers = [f"AgentOrgActingNode: {target}", f"AgentOrgRunId: {context.get('run_id', sid)}"]
+    if context.get("worktree"):
+        headers.append(f"AgentOrgWorktree: {context['worktree']}")
+    headers.append(f"ParentAgentSessionId: {sid}")
+    prompt = args.get("prompt", "")
+    # Replace protocol headers, never examples quoted later in the task.
+    while re.match(r"^(?:AgentOrgActingNode|AgentOrgRunId|AgentOrgWorktree|ParentAgentSessionId):", prompt):
+        prompt = prompt.partition("\n")[2]
+    return {"modifiedArgs": {**args, "prompt": "\n".join(headers) + "\n\n" + prompt}}
 
 
 def usage_record(root, agent, tokens):
@@ -422,40 +615,66 @@ def split_advice(org, agent, root, window=200000, threshold=0.60):
             "window": window, "threshold": threshold, "recommend_split": bool(reasons), "reasons": reasons}
 
 
-def _run_hook(org_path, mode="warn"):
-    """preToolUse hook entry: read a payload on stdin, classify, log a foreign write (warn mode), print
-    the decision. Fail open (allow) on any error or when the repo is not agent-org-managed. A relative
-    org path is resolved against the payload's cwd (the -C workspace), not the hook process cwd, so the
-    hook works regardless of where the CLI spawns it."""
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-    except Exception:
-        print(json.dumps(_allow()))
-        return 0
+def process_hook(payload, org_path=None, mode="warn", after=False):
+    cwd = Path(payload.get("cwd") or ".").resolve()
+    root = git_root(cwd) or cwd
+    context = payload.get("agentOrgContext") or _context_from_map(payload)
+    if not context.get("run_id") and STATE_ID_RE.fullmatch(root.name) and git_root(cwd) is not None:
+        candidate = git_common_dir(root) / "agent-org" / "runs" / f"{root.name}.json"
+        if candidate.exists():
+            run = json.loads(candidate.read_text(encoding="utf-8"))
+            if Path(run["path"]).resolve() == root:
+                context = {**context, "run_id": run["session_id"], "worktree": str(root)}
+    if context.get("run_id") and git_root(cwd) is not None:
+        run_file = git_common_dir(root) / "agent-org" / "runs" / f"{state_id(context['run_id'])}.json"
+        if run_file.exists():
+            run = json.loads(run_file.read_text(encoding="utf-8"))
+            context = {**context, "worktree": run["path"]}
+    if context.get("worktree"):
+        root = Path(context["worktree"]).resolve()
+    org_path = Path(org_path or "org.json")
     if not org_path.is_absolute():
-        org_path = Path(payload.get("cwd") or ".") / org_path
+        org_path = root / org_path
     if not org_path.exists():
-        print(json.dumps(_allow()))
-        return 0
-    try:
-        org = json.loads(org_path.read_text(encoding="utf-8"))
-    except Exception:
-        print(json.dumps(_allow()))
-        return 0
-    acting = _acting_from_map(payload) or os.environ.get("AGENT_ORG_ACTING")
-    decision, foreign = hook_decision(payload, org, mode=mode, acting=acting)
-    if foreign is not None:
-        _log_foreign(payload, foreign)
-    print(json.dumps(decision))
+        return {}
+    org = json.loads(org_path.read_text(encoding="utf-8"))
+    violations = check_tree(org)
+    if violations:
+        message = "agent-org: invalid organization: " + "; ".join(v["evidence"] for v in violations)
+        return {"additionalContext": message} if after else {
+            "permissionDecision": "deny", "permissionDecisionReason": message,
+        }
+    acting = context.get("node") or os.environ.get("AGENT_ORG_ACTING")
+    if payload.get("toolName") == "task" and not after:
+        return _task_context(payload, org, context)
+    decision, records = classify_write(payload, org, mode, acting, root)
+    if after:
+        result = payload.get("toolResult") or {}
+        if isinstance(result, dict) and (result.get("resultType") == "failure" or result.get("success") is False):
+            return {}
+    for record in records:
+        _log_foreign(payload, record, context, "completed" if after else "attempted")
+    if records:
+        warning = "agent-org: " + "; ".join(
+            f"{record['path']} belongs to {record['owner'] or 'UNOWNED'}, not {record['acting']}"
+            for record in records
+        ) + ". Report the attempted change to your parent for routing and reconciliation."
+        if after:
+            return {"additionalContext": warning}
+        if decision["permissionDecision"] == "allow":
+            decision["additionalContext"] = warning
+    return {} if after else decision
+
+
+def _run_hook(org_path, mode="warn", after=False):
+    payload = json.loads(sys.stdin.read())
+    print(json.dumps(process_hook(payload, org_path, mode, after)))
     return 0
 
 
 def _run_record_acting():
-    """userPromptSubmitted hook entry: read a payload on stdin and record the sessionId -> node marker."""
-    try:
-        record_acting(json.loads(sys.stdin.read() or "{}"))
-    except Exception:
-        pass
+    record_acting(json.loads(sys.stdin.read()))
+    print("{}")
     return 0
 
 
@@ -482,6 +701,11 @@ def main(argv=None):
     parser.add_argument("--tokens", type=int, default=0, help="token count for --usage-record")
     parser.add_argument("--split-advice", metavar="NODE",
                         help="advise whether NODE is over-burdened (domain size + peak usage) -> split")
+    parser.add_argument("--checkpoint", action="store_true", help="record the reconciled hybrid source snapshot")
+    parser.add_argument("--drift", action="store_true", help="report managed files changed since reconciliation")
+    parser.add_argument("--foreign", action="store_true", help="read foreign-write audit records")
+    parser.add_argument("--post-hook", action="store_true", help="postToolUse: record completion and return a warning")
+    parser.add_argument("--session", help="top-level session id for --foreign")
     args = parser.parse_args(argv)
 
     if args.record_acting:
@@ -491,10 +715,26 @@ def main(argv=None):
         usage_record(args.root, args.usage_record, args.tokens)
         return 0
 
-    if args.hook:  # handled before the unconditional org load below (must allow when org.json is absent)
-        return _run_hook(Path(args.org), mode=args.mode)
+    if args.hook or args.post_hook:
+        return _run_hook(Path(args.org), mode=args.mode, after=args.post_hook)
 
-    org = json.loads(Path(args.org).read_text(encoding="utf-8"))
+    if args.foreign:
+        print(json.dumps({"records": foreign_records(args.root, args.session)}, indent=2))
+        return 0
+
+    org_path = Path(args.org)
+    if not org_path.is_absolute():
+        org_path = Path(args.root) / org_path
+    org = json.loads(org_path.read_text(encoding="utf-8"))
+
+    if args.checkpoint:
+        checkpoint(org, args.root)
+        print(json.dumps({"status": "ok"}))
+        return 0
+
+    if args.drift:
+        print(json.dumps(drift(org, args.root), indent=2))
+        return 0
 
     if args.split_advice:
         result = split_advice(org, args.split_advice, args.root, args.window, args.threshold)
@@ -502,17 +742,13 @@ def main(argv=None):
         return 0
 
     if args.owner:
-        hits = owners_of(compile_nodes(org["nodes"]), args.owner)
-        owner = hits[0] if len(hits) == 1 else None
-        print(json.dumps({"path": normalize(args.owner), "owner": owner, "matches": hits}))
-        return 0 if owner else 1
+        result = ownership(org, args.owner)
+        print(json.dumps(result))
+        return 0 if result["status"] in {"owned", "unmanaged"} else 1
 
     if args.split_baseline:
         old = json.loads(Path(args.split_baseline).read_text(encoding="utf-8"))
-        try:
-            paths = [normalize(p) for p in args.paths] if args.paths else git_tracked(args.root)
-        except Exception:
-            paths = None
+        paths = [normalize(p) for p in args.paths] if args.paths is not None else git_tracked(args.root)
         result = check_split(old, org, paths)
         print(json.dumps(result, indent=2))
         return 0 if result["status"] == "ok" else 1
@@ -545,4 +781,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(json.dumps({"status": "error", "message": str(error)}))
+        sys.exit(2)

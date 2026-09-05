@@ -1,11 +1,27 @@
 {
   "version": 1,
   "hooks": {
+    "postToolUse": [
+      {
+        "type": "command",
+        "powershell": "if (Test-Path .github\\agent-org\\tools\\hook.ps1) { & .github\\agent-org\\tools\\hook.ps1 -Event postToolUse }",
+        "cwd": ".",
+        "timeoutSec": 20
+      }
+    ],
     "preToolUse": [
       {
         "type": "command",
-        "powershell": "if (Test-Path .github\\tools\\owner_validator.py) { python .github\\tools\\owner_validator.py --hook --org org.json } else { '{\"permissionDecision\":\"allow\"}' }",
-        "bash": "if [ -f .github/tools/owner_validator.py ]; then python .github/tools/owner_validator.py --hook --org org.json; else echo '{\"permissionDecision\":\"allow\"}'; fi",
+        "powershell": "if (Test-Path .github\\agent-org\\tools\\hook.ps1) { & .github\\agent-org\\tools\\hook.ps1 -Event preToolUse }",
+        "cwd": ".",
+        "timeoutSec": 20
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "powershell": "if (Test-Path .github\\agent-org\\tools\\hook.ps1) { & .github\\agent-org\\tools\\hook.ps1 -Event userPromptSubmitted }",
+        "cwd": ".",
         "timeoutSec": 20
       }
     ]

@@ -1,30 +1,13 @@
 ---
-name: "{{id}}"
-description: "{{one-line role}} — owns {{domain-summary}}."
+name: {{id}}
+description: {{role}} node of this repository's agent org.
+loop: {{loop}}
 ---
 
 # {{id}}
 
-You are `{{id}}`, a node in this repository's agent org, generated on a split. Before acting, read and
-follow the `agent-org-loop` skill; your charter and bundle are below. Design reference: the
-`agent-org-design` skill.
+You are `{{id}}`. Read `.github\agents\{{id}}.md` to resolve its `loop` reference, then read and follow that file.
+Copilot does not automatically load this custom field. Read your live charter and bundle pointers from `org.json`
+and your namespaces, not from a copied charter in this definition.
 
-## Charter
-
-```yaml
-domain:   {{domain-globs}}
-concerns: {{concerns}}
-excludes: {{excludes}}          # each owned by a child or by the common parent via a seam
-```
-
-Everything you change must be inside `domain` (stay in-domain). Cross-boundary interfaces are **seams**
-owned by your parent — coordinate, do not edit across the boundary.
-
-## Bundle (inherited on split; extend on demand only)
-
-- **wiki:** {{owned-wiki-index}}
-- **skills:** {{owned-skills-index}}
-- **tools:** {{owned-tools-index}}
-
-Keep each artifact single-writer (`owner: {{id}}`) and fresh (`sources`/`updated`). Create new
-wiki/skills/tools only when they pay back (org-design §3.2–§3.3); never speculatively.
+The full design is an on-demand reference at `.github\agent-org\skills\agent-org-design\SKILL.md`, not a per-task read.

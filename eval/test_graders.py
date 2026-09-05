@@ -18,12 +18,23 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
 import run  # noqa: E402
 
 CASES = []
 _DIRS = []
+
+
+@pytest.fixture(autouse=True)
+def cleanup_sandboxes():
+    yield
+    for directory in _DIRS:
+        directory.cleanup()
+    _DIRS.clear()
 
 
 def case(fn):
@@ -46,8 +57,9 @@ def _commit(cwd, msg):
 
 def sandbox(files):
     """A hermetic git repo seeded with ``files`` (rel-path -> content), committed as the baseline."""
-    d = Path(tempfile.mkdtemp(prefix="gtest-"))
-    _DIRS.append(d)
+    directory = tempfile.TemporaryDirectory(prefix="gtest-")
+    _DIRS.append(directory)
+    d = Path(directory.name)
     for rel, content in files.items():
         p = d / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -224,9 +236,10 @@ def broken_final_org_fails_coverage():
 def capture_sees_committed_change():
     d = sandbox({"a.txt": "1"})
     base = _sha(d)
+    baseline_files = run.snapshot(d)
     (d / "b.txt").write_text("2", encoding="utf-8")
     _commit(d, "add b")  # committed AFTER baseline — invisible to a bare `git status`
-    cap = run.capture(d, base)
+    cap = run.capture(d, base, baseline_files)
     assert "b.txt" in cap["changed_paths"], cap
     assert cap["new_commits"] == 1, cap
 
@@ -235,9 +248,10 @@ def capture_sees_committed_change():
 def capture_sees_untracked_and_rename():
     d = sandbox({"orig.txt": "hello world payload"})
     base = _sha(d)
+    baseline_files = run.snapshot(d)
     (d / "untracked.txt").write_text("u", encoding="utf-8")   # never staged
     _sh(["git", "mv", "orig.txt", "renamed.txt"], d)          # staged rename (identical content)
-    cap = run.capture(d, base)
+    cap = run.capture(d, base, baseline_files)
     assert "untracked.txt" in cap["changed_paths"], cap
     assert "renamed.txt" in cap["changed_paths"], cap         # rename destination present
     assert "orig.txt" in cap["changed_paths"], cap            # and its source side
@@ -326,8 +340,9 @@ _GOOD_ORG = {"version": 3, "root": "main", "nodes": [
 
 
 def _fixture(org, extra_seed=None):
-    d = Path(tempfile.mkdtemp(prefix="fx-"))
-    _DIRS.append(d)
+    directory = tempfile.TemporaryDirectory(prefix="fx-")
+    _DIRS.append(directory)
+    d = Path(directory.name)
     seed = d / "seed"
     seed.mkdir()
     (seed / "org.json").write_text(json.dumps(org), encoding="utf-8")
@@ -375,24 +390,166 @@ def host_mode_omits_agent_flag():
     assert node_cmd[node_cmd.index("--agent") + 1] == "catalog", node_cmd
 
 
-def _main():
-    failed = 0
-    try:
-        for fn in CASES:
-            try:
-                fn()
-            except AssertionError as exc:
-                failed += 1
-                print(f"FAIL {fn.__name__}: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
-    finally:
-        for d in _DIRS:
-            shutil.rmtree(d, ignore_errors=True)
-    print(f"{len(CASES) - failed}/{len(CASES)} passed")
-    return 1 if failed else 0
+@pytest.mark.parametrize("scenario", CASES, ids=lambda scenario: scenario.__name__)
+def test_grader_scenarios(scenario):
+    scenario()
 
 
-if __name__ == "__main__":
-    sys.exit(_main())
+def test_partial_unmanaged_paths_do_not_fail_routing():
+    partial = {**ORG, "scope": ["region_a/**"]}
+    directory = sandbox(FILES)
+    result = graders.grade(
+        {"agent": "a", "expected_owner": ["a"]}, partial, ["human-area/new.txt"], directory,
+    )
+    assert check(result, "routing")["result"] == "pass"
+    assert check(result, "containment")["result"] == "pass"
+
+
+def test_scope_cannot_be_rewritten_to_hide_failed_coverage():
+    altered = {**ORG, "scope": ["nonexistent/**"]}
+    result = graders.grade({"agent": "a"}, ORG, ["org.json"], sandbox(FILES), final_org=altered)
+    assert check(result, "configuration")["result"] == "fail"
+
+
+def test_capture_does_not_trust_agent_modified_ignore_rules():
+    directory = sandbox({"required.txt": "before"})
+    baseline = run.snapshot(directory)
+    commit = _sha(directory)
+    (directory / "foreign").mkdir()
+    (directory / "foreign" / "extra.txt").write_text("hidden change", encoding="utf-8")
+    (directory / ".gitignore").write_text("foreign/\n", encoding="utf-8")
+    (directory / "required.txt").write_text("after", encoding="utf-8")
+    result = run.capture(directory, commit, baseline)
+    assert "foreign/extra.txt" in result["changed_paths"]
+
+
+def test_foreign_log_requires_correct_actor_run_and_completed_phase():
+    directory = sandbox(FILES)
+    manifest = {"agent": "a", "expected_foreign": [{"path": "misc/new.txt", "owner": "b", "acting": "a"}]}
+    log = directory / ".git" / "agent-org" / "foreign" / "this-run" / "child.jsonl"
+    log.parent.mkdir(parents=True)
+    entry = {
+        "acting": "b", "disposition": "warn", "owner": "b", "path": "misc/new.txt",
+        "phase": "completed", "runId": "this-run", "sessionId": "child",
+    }
+    log.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    result = graders.grade(manifest, ORG, ["misc/new.txt"], directory, run_id="this-run")
+    assert check(result, "foreign_log")["result"] == "fail"
+    entry["acting"] = "a"
+    entry["phase"] = "attempted"
+    log.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    result = graders.grade(manifest, ORG, ["misc/new.txt"], directory, run_id="this-run")
+    assert check(result, "foreign_log")["result"] == "fail"
+    entry["phase"] = "completed"
+    log.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    result = graders.grade(manifest, ORG, ["misc/new.txt"], directory, run_id="this-run")
+    assert check(result, "foreign_log")["result"] == "pass"
+    result = graders.grade(manifest, ORG, ["misc/new.txt"], directory, run_id="another-run")
+    assert check(result, "foreign_log")["result"] == "fail"
+
+
+def test_expected_warning_does_not_disable_other_containment_checks():
+    manifest = {"agent": "a", "expected_foreign": [{"path": "misc/allowed.txt", "owner": "b", "acting": "a"}]}
+    result = graders.grade(manifest, ORG, ["misc/unexpected.txt"], sandbox(FILES))
+    assert check(result, "containment")["result"] == "fail"
+
+
+def test_denial_fixture_requires_a_logged_attempt():
+    directory = sandbox(FILES)
+    manifest = {
+        "agent": "root", "expected_no_changes": True,
+        "expected_denied": [{"path": "region_a/blocked.txt", "owner": "a", "acting": "root"}],
+    }
+    result = graders.grade(manifest, ORG, [], directory, run_id="run-one")
+    assert check(result, "denied_writes")["result"] == "fail"
+    log = directory / ".git" / "agent-org" / "foreign" / "run-one" / "parent.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps({
+        "acting": "root", "disposition": "deny", "owner": "a", "path": "region_a/blocked.txt",
+        "phase": "attempted", "runId": "run-one", "sessionId": "parent",
+    }) + "\n", encoding="utf-8")
+    result = graders.grade(manifest, ORG, [], directory, run_id="run-one")
+    assert check(result, "denied_writes")["result"] == "pass"
+
+
+def test_role_promotion_requires_updating_loop_reference(tmp_path):
+    current = {"nodes": [
+        {"id": "director", "mode": "Parent"},
+        {"id": "ledger", "mode": "Leaf"},
+        {"id": "stock", "mode": "Leaf"},
+    ]}
+    agents = tmp_path / ".github" / "agents"
+    loops = tmp_path / ".github" / "agent-org" / "loops"
+    agents.mkdir(parents=True)
+    loops.mkdir(parents=True)
+    for role in ("leaf", "parent"):
+        (loops / f"{role}.md").write_text(role, encoding="utf-8")
+    for node in current["nodes"]:
+        (agents / f"{node['id']}.md").write_text(
+            "---\nloop: .github/agent-org/loops/leaf.md\n---\n", encoding="utf-8",
+        )
+    assert graders.bv.check_agent_roles(current, tmp_path) == [
+        "director must reference .github/agent-org/loops/parent.md"
+    ]
+    (agents / "director.md").write_text(
+        "---\nloop: .github/agent-org/loops/parent.md\n---\n", encoding="utf-8",
+    )
+    assert graders.bv.check_agent_roles(current, tmp_path) == []
+
+
+def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch):
+    fixture = tmp_path / "fixture"
+    seed = fixture / "seed"
+    seed.mkdir(parents=True)
+    org = {"version": 3, "root": "director", "nodes": [
+        {"id": "director", "parent": None, "children": ["inbound", "outbound"], "mode": "Parent",
+         "charter": {"domain": [".github/**", ".gitignore", "org.json"], "concerns": [], "excludes": []}},
+        {"id": "inbound", "parent": "director", "children": [], "mode": "Leaf",
+         "charter": {"domain": ["inbound/**"], "concerns": [], "excludes": []}},
+        {"id": "outbound", "parent": "director", "children": [], "mode": "Leaf",
+         "charter": {"domain": ["outbound/**"], "concerns": [], "excludes": []}},
+    ]}
+    (seed / "org.json").write_text(json.dumps(org), encoding="utf-8")
+    manifest = {
+        "agent": "director", "check_role_refs": True, "id": "shared-driver", "intent": "Plan and dispatch",
+        "expected_owner": ["inbound", "outbound"], "required_touched_owners": ["inbound", "outbound"],
+    }
+    (fixture / "manifest.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    observed = {}
+
+    def invoke(_manifest, workspace, env, _model, _effort, _timeout, acting, run_id):
+        assert acting == "director"
+        assert "AGENT_ORG_ACTING" not in env
+        assert (workspace / ".git").is_file()
+        assert not (workspace / ".github" / "agent-org" / "tools" / "bundle_validator.py").exists()
+        observed["workspace"] = workspace
+        run.ov.record_acting({
+            "cwd": str(workspace), "sessionId": "parent",
+            "prompt": f"AgentOrgActingNode: director\nAgentOrgRunId: {run_id}\nPlan",
+        })
+        for child in ("inbound", "outbound"):
+            dispatched = run.ov.process_hook({
+                "cwd": str(workspace), "sessionId": "parent", "toolName": "task",
+                "toolArgs": {"agent_type": child, "prompt": "Write your result"},
+            })["modifiedArgs"]["prompt"]
+            run.ov.record_acting({"cwd": str(workspace), "sessionId": child, "prompt": dispatched})
+            reused = run.worktree.create(workspace)
+            assert reused["session_id"] == run_id and Path(reused["path"]) == workspace
+            file = workspace / child / "result.txt"
+            file.parent.mkdir(exist_ok=True)
+            call = {"cwd": str(workspace), "sessionId": child, "toolName": "create",
+                    "toolArgs": {"path": str(file)}}
+            assert run.ov.process_hook(call)["permissionDecision"] == "allow"
+            file.write_text(child, encoding="utf-8")
+        return {
+            "response": "completed", "exit": 0, "timed_out": False, "duration_s": 1,
+            "usage": {}, "trajectory": [], "infra_error": None,
+        }
+
+    monkeypatch.setattr(run, "invoke", invoke)
+    monkeypatch.setattr(run, "copilot_env", lambda: {})
+    result = run.run_case(fixture, 1, None, None, False, judge=False)
+    assert not result.get("fixture_error"), result
+    assert result["runs"][0]["grade"]["passed"], result["runs"][0]["grade"]
+    assert result["runs"][0]["changed_paths"] == ["inbound/result.txt", "outbound/result.txt"]
+    assert not observed["workspace"].exists()
