@@ -99,6 +99,9 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
         files[relative] = _read(path)
 
     template = _read(assets["template"]).decode("utf-8-sig").replace("\r\n", "\n")
+    internal_visibility = "\nuser-invocable: false\n"
+    if internal_visibility not in template:
+        raise BootstrapError("The node template must default to user-invocable: false.")
     files[".github/agent-org/templates/_node.template.md"] = template.encode("utf-8")
     for node in org["nodes"]:
         replacements = {
@@ -109,6 +112,8 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
         rendered = template
         for key, value in replacements.items():
             rendered = rendered.replace("{{" + key + "}}", value)
+        if node["id"] == config["root"]:
+            rendered = rendered.replace(internal_visibility, "\nuser-invocable: true\n", 1)
         if "{{" in rendered:
             raise BootstrapError("Unresolved placeholder in the node template.")
         files[f".github/agents/{node['id']}.md"] = rendered.encode("utf-8")

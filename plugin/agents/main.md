@@ -2,6 +2,7 @@
 name: main
 description: Default root definition before bootstrap renders the configured entry node.
 loop: .github/agent-org/loops/leaf.md
+user-invocable: true
 ---
 
 # main

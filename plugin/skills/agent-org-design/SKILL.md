@@ -1,6 +1,7 @@
 ---
 name: agent-org-design
 description: On-demand reference for organization growth, managed ownership, seams, and durable node knowledge.
+user-invocable: false
 ---
 
 # Agent-org design reference
@@ -28,6 +29,10 @@ meta-agent for approved organization changes, not a domain owner.
 
 See the installed Host instructions and `.github\agent-org\loops` for the operating rules. The agent must
 explicitly read its `loop` file; a custom frontmatter field does not cause Copilot to load it.
+
+Only `org.root` (default `main`) and the `bootstrap` skill are user-invocable entry points. Other agents,
+including `splitter`, and all other skills use `user-invocable: false`. Keep them available for agent
+invocation; this setting limits manual invocation, not filesystem visibility.
 
 ### 2.2 Charters and managed scope
 
@@ -153,6 +158,7 @@ name: add-catalog-item
 description: Use when adding a catalog item.
 owner: catalog
 sources: [src/catalog/schema.json]
+user-invocable: false
 ---
 ```
 

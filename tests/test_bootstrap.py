@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 PLUGIN = Path(__file__).resolve().parents[1] / "plugin"
@@ -34,6 +35,10 @@ def write(path, content):
 
 def seed():
     return json.loads((PLUGIN / "seed" / "org.json").read_text(encoding="utf-8"))
+
+
+def frontmatter(content):
+    return yaml.safe_load(content.decode("utf-8-sig").split("---", 2)[1])
 
 
 def live_tree():
@@ -202,6 +207,68 @@ def test_custom_root_is_rendered_without_default_agent(repo):
     assert "then read and follow that file" in definition
     assert "does not automatically load" in definition
     assert (PLUGIN / "seed" / "org.json").read_bytes() == original_seed
+
+
+@pytest.mark.parametrize("path", sorted((PLUGIN / "agents").glob("*.md")), ids=lambda path: path.stem)
+def test_plugin_agent_invocation_defaults(path):
+    content = path.read_bytes()
+    if path.name == "_node.template.md":
+        assert b"\nuser-invocable: false\n" in content.replace(b"\r\n", b"\n")
+    else:
+        fields = frontmatter(content)
+        assert fields["user-invocable"] is (path.stem == "main")
+        assert fields.get("disable-model-invocation", False) is False
+
+
+@pytest.mark.parametrize("path", sorted((PLUGIN / "skills").rglob("SKILL.md")), ids=lambda path: path.parent.name)
+def test_only_bootstrap_skill_is_user_invocable(path):
+    fields = frontmatter(path.read_bytes())
+    assert fields["user-invocable"] is (path.parent.name == "bootstrap")
+    assert fields.get("disable-model-invocation", False) is False
+
+
+@pytest.mark.parametrize("root_name", ["main", "navigator"])
+def test_bootstrap_preserves_only_public_entry_points(repo, root_name):
+    bootstrap.bootstrap_repo(repo, root_name=root_name, source=PLUGIN)
+    for file in (repo / ".github" / "agents").glob("*.md"):
+        assert frontmatter(file.read_bytes())["user-invocable"] is (file.stem == root_name)
+    copied = repo / ".github" / "agent-org"
+    for file in copied.rglob("SKILL.md"):
+        fields = frontmatter(file.read_bytes())
+        assert fields["user-invocable"] is (fields["name"] == "bootstrap")
+
+
+def test_non_root_promotion_and_new_children_remain_internal(repo):
+    org = live_tree()
+    write(repo / "org.json", json.dumps(org))
+    bootstrap.bootstrap_repo(
+        repo, root_name=org["root"], scope=org["scope"], collaboration=org["collaboration"], source=PLUGIN
+    )
+    alpha = next(node for node in org["nodes"] if node["id"] == "alpha")
+    alpha["mode"] = "Parent"
+    alpha["children"] = ["alpha-one", "alpha-two"]
+    alpha["charter"]["domain"] = ["src/alpha/shared/**"]
+    for child in alpha["children"]:
+        org["nodes"].append({
+            "id": child, "parent": "alpha", "children": [], "mode": "Leaf",
+            "charter": {"domain": [f"src/alpha/{child}/**"], "concerns": [], "excludes": []},
+        })
+    org["version"] += 1
+    rendered = bootstrap.runtime_files(org, source=repo / ".github" / "agent-org")
+    for node in org["nodes"]:
+        fields = frontmatter(rendered[f".github/agents/{node['id']}.md"])
+        assert fields["user-invocable"] is (node["id"] == org["root"])
+        assert fields["loop"].endswith(f"/{node['mode'].lower()}.md")
+    assert frontmatter(rendered[".github/agents/splitter.md"])["user-invocable"] is False
+
+
+def test_renderer_rejects_a_template_that_makes_children_user_invocable(tmp_path):
+    source = tmp_path / "plugin"
+    shutil.copytree(PLUGIN, source)
+    template = source / "agents" / "_node.template.md"
+    write(template, template.read_text(encoding="utf-8").replace("user-invocable: false", "user-invocable: true"))
+    with pytest.raises(bootstrap.BootstrapError, match="user-invocable: false"):
+        bootstrap.runtime_files(seed(), source=source)
 
 
 def test_runtime_rendering_uses_live_roles_and_stable_scope(tmp_path):
@@ -426,6 +493,9 @@ def test_installed_source_can_render_promoted_roles_and_rebootstrap(repo):
     installed_source = repo / ".github" / "agent-org"
     rendered = bootstrap.runtime_files(org, source=installed_source)
     assert rendered == bootstrap.runtime_files(org, source=PLUGIN)
+    for node in org["nodes"]:
+        fields = frontmatter(rendered[f".github/agents/{node['id']}.md"])
+        assert fields["user-invocable"] is (node["id"] == org["root"])
     write(repo / "org.json", json.dumps(org, indent=2))
     for node in org["nodes"]:
         relative = f".github/agents/{node['id']}.md"

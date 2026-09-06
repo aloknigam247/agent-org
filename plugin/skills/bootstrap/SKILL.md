@@ -1,6 +1,7 @@
 ---
 name: bootstrap
 description: Configure agent-org in an existing Windows Git repository without overwriting files or changing the index.
+user-invocable: true
 ---
 
 # Bootstrap agent-org
@@ -45,6 +46,7 @@ bootstrap command rejects conflicting selections. Local mode cannot hide files t
    ```
 
    This preflights all destination collisions, preserves matching files, and reports `created` versus `existing`.
+   Generated definitions and copied skills follow the [invocation policy](..\agent-org-design\SKILL.md#21-nodes-and-roles).
    Stop on a conflict; never overwrite a file, hand-edit the live tree to force a pass, or stage unrelated work.
    No Git initialization, commit, package install, or global Git/Copilot configuration change is performed.
 

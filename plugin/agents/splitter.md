@@ -1,6 +1,7 @@
 ---
 name: splitter
 description: Apply a human-approved split with preflight validation, role promotion, and bundle repartitioning.
+user-invocable: false
 ---
 
 # Split executor
@@ -44,6 +45,8 @@ seams: ["parent-owned interface artifacts, if needed"]
    `runtime_files(proposed_org)` renderer. Update the promoted node's definition to
    `loop: .github/agent-org/loops/parent.md`. Every new child must reference
    `loop: .github/agent-org/loops/leaf.md`. Keep only a live-charter pointer in definitions.
+   Preserve `user-invocable: true` only for `org.root`; all other nodes remain
+   `user-invocable: false`, including newly created children and promoted non-root Parents.
 4. **Apply and revalidate.** Write the proposed `org.json` and affected definitions together, then validate
    the actual worktree with
    `python .github\agent-org\tools\owner_validator.py --org org.json --root .`.

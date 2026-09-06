@@ -2,6 +2,7 @@
 name: {{id}}
 description: {{role}} node of this repository's agent org.
 loop: {{loop}}
+user-invocable: false
 ---
 
 # {{id}}

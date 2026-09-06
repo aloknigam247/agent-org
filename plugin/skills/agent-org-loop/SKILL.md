@@ -1,6 +1,7 @@
 ---
 name: agent-org-loop
 description: Locate the small operating file for an agent-org node's current role.
+user-invocable: false
 ---
 
 # Locate the operating file
