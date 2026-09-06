@@ -1,108 +1,73 @@
-# agent-org eval harness
+# agent-org evaluations
 
-Offline, headless, fixture-based testing of the agent org. Each case gives an agent an **intent**,
-runs it in a disposable sandbox, and checks its **output** — response, actions, and resulting repo
-state — against a **human-curated manifest** that is independent of `org.json` (so routing checks are
-not circular).
+The runtime lives in `plugin/`. This directory and `tests/` are development-only; neither is installed in target repos.
+`bundle_validator.py` checks bundle metadata and freshness for preflight and grading, not at runtime.
 
-Status: **E1–E3** — build/invoke/capture/teardown (E1), deterministic grading (E2), and stochastic
-aggregation over N repeats: estimated pass@1, per-check rates, failure modes, cost, a runaway gate, and
-split-threshold calibration (E3).
+## Deterministic tests
 
-## Layout
-
-```
-eval/
-  run.py                 # runner; reuses .github/tools/owner_validator as the grader backbone
-  requirements.txt       # pyyaml (the oracle needs pathspec, see .github/tools/requirements.txt)
-  fixtures/<case>/
-    manifest.yml         # the case definition (below)
-    seed/                # repo state under test: org.json + domain files (kept small)
-```
-
-The runner overlays the kernel (`.github/`, `org.schema.json`) onto the fixture `seed/`, so a fixture
-only carries its unique state. The sandbox is a fresh git repo with a single `seed` commit as the
-baseline for diffs.
-
-## Manifest
-
-```yaml
-id: <case-id>
-unit: node | splitter          # what is under test
-agent: main                    # agent to invoke (main, splitter, or a node id)
-intent: "<the prompt given to the agent>"
-expected_owner: [main]         # human-labeled owning node(s) — routing ground truth (not from org.json)
-allowed_paths: ["**"]          # regions the change may touch
-forbidden_paths: []            # regions it must not touch
-required_paths: []             # globs at least one changed path must match (fail closed on a no-op)
-required_touched_owners: []    # owners that must appear among the acting node(s) (fail closed on a no-op)
-expected_no_changes: null      # true for a refuse/reject case that must change nothing at all
-required_behavior: []          # human-readable outcome checks (judge only where a command can't decide)
-build_cmd: null                # optional outcome assertion (exit 0 = pass); verifies required_behavior
-build_timeout: 60              # seconds; a build that overruns fails (never stalls the run)
-judge: null                    # optional advisory LLM-judge question (never folded into pass/fail)
-timeout: 240                   # seconds (case wall clock; exceeding it flags a runaway)
-max_cost: null                 # optional USD cap; premium-request cost above it flags a runaway
-max_model_calls: null          # optional cap on model calls; above it flags a runaway
-threshold_override: null       # optional split-threshold fraction (scale down so a small fixture trips a split)
-```
-
-Every seed `org.json` must satisfy `org.schema.json` (e.g. `version >= 3`). Before spending an agent
-run, the harness **preflights** each fixture: schema-valid seed, clean baseline coverage, the invoked
-agent exists with a def, and — for a mutation fixture — `build_cmd` **fails** on the untouched seed (so
-a later green build proves the agent did the work, not that the fixture was pre-satisfied). A fixture
-that fails preflight is reported as a `fixture_error` and consumes no agent runs (`--no-preflight`
-skips this).
-
-Fixtures are **versioned and immutable** — new reality means a new fixture version, never a silent
-edit of an existing one.
-
-## Run
+From the repository root:
 
 ```pwsh
-pip install -r eval/requirements.txt
-python eval/run.py eval/fixtures/smoke-create            # one run
-python eval/run.py eval/fixtures/smoke-create --repeats 5 --keep
+python -m pip install -r plugin\tools\requirements.txt -r eval\requirements.txt
+python -m pytest -q
 ```
 
-Auth: the harness sets `COPILOT_GITHUB_TOKEN` from `gh auth token`, because a spawned `copilot`
-subprocess does not inherit an agent session's managed auth.
+See [TEST-PLAN.md](TEST-PLAN.md) for the scenario matrix and evidence boundaries.
 
-## Repeats & summary
+## Agent fixtures
 
-`--repeats N` runs the case N times and adds a `summary`: `pass_rate` (estimated pass@1 — a runaway
-run never counts as a pass), `per_check_pass_rate`, `failure_modes` (a sample per failing check),
-`cost`, `duration_s`, `runaway_count`, and `calibration` pairs (static domain-size proxy vs. actual
-input tokens) for recalibrating the split threshold. Pin `--model`/`--effort` for reproducible numbers.
+Each `fixtures/<case>/` contains a manifest and an independent `seed/` repository state. The runner uses bootstrap's
+runtime assembly, then overlays the fixture. Agent definitions are generated from the seed org unless the fixture
+deliberately overrides one to exercise a runtime guardrail.
 
-## Trajectory (advisory)
-
-The runner captures the agent's tool-call trajectory from the `--output-format json` stream
-(`tool.execution_start`/`tool.execution_complete`) and reports advisory signals that **never change
-pass/fail**: per-run `trajectory_analysis` (`tool_calls`, `tools`, `delegated_to`, `ran_oracle`,
-`committed`, `oracle_before_commit`, `looped_tools`) and a summary `trajectory` block with the
-delegation / oracle-before-commit / loop rates. These reveal *how* an outcome was reached — e.g. a
-parent that produces the right file without invoking the owning child. Use `--keep` to retain the raw
-per-call trajectory for inspection.
-
-## Judge (advisory, opt-in)
-
-Add a `judge: "<question>"` field to a manifest and the runner asks a strict headless LLM judge that
-one question about each run (given the intent, required behavior, response, and changed paths),
-recording `{verdict: pass|fail|unsure, rationale}` per run and a verdict tally in the summary. It is
-**advisory** — never folded into pass/fail — and used only where a command can't decide a qualitative
-point. No `judge` field means no judge call (no cost); `--no-judge` skips it globally.
-
-## Self-tests
-
-Deterministic, offline, no agent calls — fresh scenarios independent of the design examples that pin
-the grading backbone:
+Preflight checks the seed schema, managed coverage, agent definitions, bundle integrity, and outcome preconditions.
+Each invocation gets an isolated Copilot home, the canonical Windows command hooks and skills, and one shared
+worktree. All descendants receive the same run/worktree context. The harness owns integration and cleanup.
 
 ```pwsh
-python .github/tools/test_owner_validator.py   # oracle: glob, coverage, tree, containment, --size, split
-python .github/tools/test_bundle_validator.py  # bundle integrity: SO2 presence, single-writer, orphans
-python .github/tools/test_worktree.py          # worktree lifecycle: isolation, serialized integration
-python eval/test_graders.py                    # grade() + harness: capture, fail-closed, preflight
+python eval\run.py eval\fixtures\shared-session-routing --repeats 3 --no-judge --keep
 ```
 
-Each exits non-zero if any case fails.
+An explicitly supplied `COPILOT_GITHUB_TOKEN` takes precedence; otherwise the runner uses the active `gh` account.
+Pin an available `--model` and `--effort` when comparing runs. Live agent runs consume the selected account's quota.
+`--keep` returns the worktree, source repository, and isolated home paths for inspection.
+
+## Manifest fields
+
+| Field | Meaning |
+| --- | --- |
+| `agent` | Org node to invoke; defaults to the seed root. `host` omits `--agent`. |
+| `allowed_paths`, `forbidden_paths` | Permitted and prohibited changed-path patterns. |
+| `build_cmd`, `build_timeout` | Objective result assertion and its time limit. |
+| `check_role_refs` | Check the single Markdown-body `loop:` reference against the node's final Leaf/Parent role. |
+| `expected_delegations` | Expected child calls, reported as advisory observations rather than inferred from files. |
+| `expected_denied` | Expected attempted denials: entries with `path`, `owner`, and `acting`. |
+| `expected_foreign` | Expected completed warnings with `path`, `owner`, and `acting`; `[]` requires none. |
+| `expected_no_changes` | A rejection/refusal must leave no diff; `false` requires an effect. |
+| `expected_owner` | Human-labeled allowed owners of changed managed paths; this does not establish authorship. |
+| `hook_mode` | Defaults to the runtime's relationship-aware `warn`; `enforce` is an explicit stricter test mode. |
+| `id`, `intent`, `unit` | Case identity, prompt, and component under test. |
+| `judge` | Optional qualitative rubric; advisory only. Skip it with `--no-judge`. |
+| `max_cost`, `max_model_calls`, `timeout` | Optional usage bounds and invocation timeout. |
+| `required_behavior` | Human-readable expectations; each needs a corresponding assertion or advisory rubric. |
+| `required_paths`, `required_touched_owners` | Required effects, preventing vacuous no-op passes. |
+
+Scope, collaboration, and storage are defined in the seed `org.json`, using `plugin/org.schema.json`.
+An out-of-scope path is unmanaged, not a coverage error. An unowned path inside scope remains a coverage error.
+
+## Reading results
+
+The changed-path set includes committed and working changes relative to the baseline. Ownership attribution uses
+the baseline org; coverage uses the final org. Runtime configuration must not be rewritten by an agent to hide a gap.
+Split evaluations also compare the old and new orgs.
+
+Audit assertions use the common Git directory and the current run ID, including the recorded actor and phase.
+An attempted warning is not proof that a write completed. Declaring one expected foreign write does not waive
+containment for every other path.
+
+`summary.pass_rate` is an observed rate over non-infrastructure runs. Timeouts remain failures. Per-check rates
+exclude runs where that check was absent. Trajectory and judge results remain advisory; a correct final file alone
+does not prove delegation, successful reconciliation, or interactive extension attachment.
+
+The command-hook runner and deterministic extension-adapter tests cover different boundaries. Neither substitutes
+for a live interactive extension test.

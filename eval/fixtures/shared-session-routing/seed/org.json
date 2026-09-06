@@ -1,0 +1,21 @@
+{
+  "version": 3,
+  "root": "director",
+  "nodes": [
+    {
+      "id": "director", "parent": null, "children": ["billing", "receiving"], "mode": "Parent",
+      "charter": {
+        "domain": [".github/**", ".gitignore", "org.json"],
+        "concerns": ["shared coordination"], "excludes": []
+      }
+    },
+    {
+      "id": "billing", "parent": "director", "children": [], "mode": "Leaf",
+      "charter": { "domain": ["billing/**"], "concerns": ["billing"], "excludes": [] }
+    },
+    {
+      "id": "receiving", "parent": "director", "children": [], "mode": "Leaf",
+      "charter": { "domain": ["receiving/**"], "concerns": ["receiving"], "excludes": [] }
+    }
+  ]
+}

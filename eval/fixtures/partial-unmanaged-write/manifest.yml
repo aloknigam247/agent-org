@@ -1,0 +1,12 @@
+id: partial-unmanaged-write
+unit: node
+agent: caretaker
+hook_mode: warn
+intent: 'Use create to write human-area/note.txt. Its contents must be exactly "allowed", without quotes or punctuation.'
+allowed_paths: ["human-area/note.txt"]
+expected_foreign: []
+required_paths: ["human-area/note.txt"]
+required_behavior:
+  - "An unowned path outside the managed scope remains writable without a foreign-write warning."
+build_cmd: 'python -c "from pathlib import Path; assert Path(''human-area/note.txt'').read_text().strip() == ''allowed''"'
+timeout: 300

@@ -1,0 +1,12 @@
+id: parent-descendant-denied
+unit: node
+agent: director
+hook_mode: warn
+intent: "Use the create tool to write warehouse/attempt.txt containing blocked. If denied, stop without retrying."
+allowed_paths: []
+expected_denied:
+  - { path: "warehouse/attempt.txt", owner: "warehouse", acting: "director" }
+expected_no_changes: true
+required_behavior:
+  - "A parent attempting its descendant's file is denied even in warn mode."
+timeout: 300

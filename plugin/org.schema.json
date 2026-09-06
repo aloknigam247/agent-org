@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/aloknigam/agent-org/org.schema.json",
   "title": "Agent Org",
-  "description": "Live organizational state of a self-organizing agent org: the whole node tree with charters inlined. This schema validates STRUCTURE only. Semantic coverage (exactly-one-owner via effective domain, overlap/uncovered, tree back-references and shape) is computed by the owner-oracle (owner_validator.py in the agent-org plugin); see the agent-org-design skill §2.2 and §2.7.",
+  "description": "Per-repository organization and bootstrap configuration. This schema validates structure; owner_validator.py validates managed coverage and tree semantics.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "root", "nodes"],
@@ -10,16 +10,35 @@
     "version": {
       "type": "integer",
       "minimum": 3,
-      "description": "Org-state version. Bumped by exactly one on every committed split."
+      "description": "Org-state version. Bumped by exactly one on every applied split."
     },
     "root": {
       "type": "string",
-      "description": "id of the root node. The Host hardcodes the entry point to this node."
+      "description": "Configured entry node. Bootstrap defaults to main; the Host reads this field.",
+      "not": { "enum": ["host", "splitter"] },
+      "pattern": "^[a-z][a-z0-9-]*$"
     },
     "nodes": {
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/definitions/node" }
+    },
+    "collaboration": {
+      "enum": ["agents", "hybrid"],
+      "default": "agents",
+      "description": "agents uses the org workflow; hybrid also reconciles between-run human changes."
+    },
+    "scope": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "default": ["**"],
+      "description": "Managed code globs, independent of collaboration and stable through splits. Paths outside this scope are unmanaged and allowed; gaps inside it remain UNOWNED. Never infer scope from a Parent's retained domain."
+    },
+    "storage": {
+      "enum": ["local", "tracked"],
+      "default": "local",
+      "description": "local excludes exact overlay files via Git's common info/exclude; tracked leaves them ready for version control. Runtime worktrees and caches remain excluded in both modes."
     }
   },
   "definitions": {
@@ -31,7 +50,8 @@
         "id": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]*$",
-          "description": "Stable, hierarchy-free identifier. Never renamed across reorgs."
+          "description": "Stable, hierarchy-free identifier. Never renamed across reorgs.",
+          "not": { "enum": ["host", "splitter"] }
         },
         "parent": {
           "type": ["string", "null"],

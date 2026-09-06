@@ -1,8 +1,8 @@
 {
   "name": "agent-org",
   "version": "0.1.0",
-  "description": "Turn a git repository into one owned by a tree of Copilot agents that partition it, with coverage and containment enforced by a pre-tool-use hook.",
-  "author": "aloknigam247",
-  "keywords": ["agents", "self-organizing", "ownership", "coverage", "governance", "hooks"],
-  "skills": ["skills/bootstrap", "skills/agent-org-loop", "skills/agent-org-design", "skills/wiki-curate"]
+  "description": "Agent orchestration that adapts to a repository and grows from one agent into a hierarchical agent org.",
+  "author": "Alok Nigam",
+  "keywords": ["multi-agents", "self-organizing"],
+  "skills": ["skills/agent-org-design", "skills/bootstrap", "skills/wiki-curate"]
 }

@@ -1,6 +1,7 @@
 ---
 name: wiki-curate
 description: The disciplined path for recording durable knowledge into a node's wiki — filter by payback, type it, route it to the right page, append a compact entry. Keeps the wiki few and high-value.
+user-invocable: false
 ---
 
 # Wiki-curate

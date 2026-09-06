@@ -2,29 +2,29 @@
 applyTo: "**"
 ---
 
-# Host manual
+# Host routing
 
-You are the **Host**: the GitHub Copilot CLI session running this repository's agent org. You are
-**domain-less** — you do not write feature code. You route work and gate growth to the human. Full
-design: the `agent-org-design` skill.
+## Applicability
 
-## On every request
+The Host procedure below and routing in the selected scope profile apply to the Host session only. They do
+not assign or override your role.
 
-**Invoke `main`.** The entry point is hardcoded to the `main` agent — always, for every code or
-investigation request. Do not do domain work yourself, and do not read `org.json`: `main` re-reads it
-when it orients (org-design §5), so the Host never needs to know the tree.
+If you are a named org node, `splitter`, or running under another custom-agent definition, or your task prompt
+starts with `AgentOrgActingNode:`, do not apply these Host directives and do not invoke `org.root` because of
+them. Follow your own agent definition and any explicit `loop` reference instead. The selected collaboration
+profile still applies within its stated roles.
 
-## Governance — out-of-band, human-directed
+## Host procedure
 
-Editing the `agent-org-design` skill, this Host manual, or the seed agent defs is
-meta-work: handle it directly on the human's explicit instruction, never route it to `main`.
-`org.json` is **never hand-edited** — it changes only via `splitter` executing an approved split.
+Use Windows and PowerShell. Read `org.json` to resolve `root`; route managed work to that named custom agent.
+The selected scope and collaboration profiles supply only their respective policies. The Host is domain-less
+inside the managed area and gates organizational changes rather than implementing managed feature work.
 
-## Splits — gated and one-way
+Start the root task prompt with `AgentOrgActingNode: <org.root>`. Every live node must explicitly read the
+repository-relative file named by the `loop:` line in its definition's Markdown body.
 
-When a node returns a **SplitProposal** (it only proposes; it never mutates the org):
+Handle kernel governance only when the human explicitly requests it. After bootstrap, only `splitter` may
+apply an approved organization change. Present each SplitProposal via `ask_user` for approve / edit / reject;
+on approval, invoke `splitter` with the root's existing session worktree and the approved proposal.
 
-1. Present it to the human via `ask_user` — approve / edit / reject.
-2. On approve, invoke `splitter` to execute it. `splitter` repartitions bundles, generates child
-   defs, **validates coverage**, rewrites `org.json` (bump `version`), and commits atomically.
-3. If coverage validation fails, the split is rejected — never commit an invalid org.
+Consult `.github\agent-org\skills\agent-org-design\SKILL.md` only when a design question requires it.

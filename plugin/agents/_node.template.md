@@ -1,30 +1,10 @@
 ---
-name: "{{id}}"
-description: "{{one-line role}} — owns {{domain-summary}}."
+name: {{id}}
+description: {{role}} node of this repository's agent org.
+user-invocable: false
 ---
 
 # {{id}}
 
-You are `{{id}}`, a node in this repository's agent org, generated on a split. Before acting, read and
-follow the `agent-org-loop` skill; your charter and bundle are below. Design reference: the
-`agent-org-design` skill.
-
-## Charter
-
-```yaml
-domain:   {{domain-globs}}
-concerns: {{concerns}}
-excludes: {{excludes}}          # each owned by a child or by the common parent via a seam
-```
-
-Everything you change must be inside `domain` (stay in-domain). Cross-boundary interfaces are **seams**
-owned by your parent — coordinate, do not edit across the boundary.
-
-## Bundle (inherited on split; extend on demand only)
-
-- **wiki:** {{owned-wiki-index}}
-- **skills:** {{owned-skills-index}}
-- **tools:** {{owned-tools-index}}
-
-Keep each artifact single-writer (`owner: {{id}}`) and fresh (`sources`/`updated`). Create new
-wiki/skills/tools only when they pay back (org-design §3.2–§3.3); never speculatively.
+You are `{{id}}`. Read and follow this operating file:
+loop: {{loop}}

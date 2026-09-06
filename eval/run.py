@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import re
@@ -28,14 +29,18 @@ import subprocess
 import tempfile
 import sys
 import time
+import uuid
 from pathlib import Path
 
+import jsonschema
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
 import owner_validator as ov  # noqa: E402  (path added by graders import)
-import bundle_validator as bv  # noqa: E402  (same plugin/tools path)
+import bootstrap  # noqa: E402
+import bundle_validator as bv  # noqa: E402
+import worktree  # noqa: E402
 
 KERNEL = Path(__file__).resolve().parent.parent
 META_AGENTS = {"splitter"}  # kernel meta-agents that are not org nodes but are valid `agent` targets
@@ -48,26 +53,16 @@ def sh(args, cwd=None, env=None, timeout=None):
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
-def build_sandbox(fixture: Path, dest: Path):
-    """Reproduce a bootstrapped agent-org repo: materialize the seed agent defs, tools, and Host-manual
-    from the plugin, add the schema, overlay the fixture seed, and make a baseline commit. The tools go
-    to .github/tools so the agents and the containment hook can reach the oracle repo-relative."""
-    agents_dir = dest / ".github" / "agents"
-    agents_dir.mkdir(parents=True, exist_ok=True)
-    for a in sorted((KERNEL / "plugin" / "agents").glob("*.md")):
-        shutil.copy2(a, agents_dir / a.name)
-    tools_dir = dest / ".github" / "tools"
-    tools_dir.mkdir(parents=True, exist_ok=True)
-    for t in (KERNEL / "plugin" / "tools").glob("*.py"):
-        shutil.copy2(t, tools_dir / t.name)
-    instr_dir = dest / ".github" / "instructions"
-    instr_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(KERNEL / "plugin" / "instructions" / "agent-org.instructions.md",
-                 instr_dir / "agent-org.instructions.md")
-    shutil.copy2(KERNEL / "plugin" / "org.schema.json", dest / "org.schema.json")
+def build_sandbox(fixture: Path, dest: Path, prepare=None):
+    """Use the same runtime assembly as bootstrap, then overlay the independent fixture's state."""
+    seed = fixture / "seed"
+    org = json.loads((seed / "org.json").read_text(encoding="utf-8"))
+    for relative, content in bootstrap.runtime_files(org, KERNEL / "plugin").items():
+        target = dest / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
     if (KERNEL / ".gitignore").exists():
         shutil.copy2(KERNEL / ".gitignore", dest / ".gitignore")
-    seed = fixture / "seed"
     for item in seed.iterdir():
         target = dest / item.name
         if item.is_dir():
@@ -79,18 +74,17 @@ def build_sandbox(fixture: Path, dest: Path):
     sh(["git", "config", "core.eol", "lf"], cwd=dest)
     # Hermetic: ignore the user's global core.hooksPath (e.g. commitlint) so sandbox commits succeed.
     sh(["git", "config", "core.hooksPath", str(dest / ".git" / "hooks")], cwd=dest)
+    sh(["git", "config", "user.email", "eval@local"], cwd=dest)
+    sh(["git", "config", "user.name", "eval"], cwd=dest)
+    if prepare:
+        prepare(dest)
     sh(["git", "add", "-A"], cwd=dest)
     sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval", "commit", "-q", "--no-verify", "-m", "chore: seed"], cwd=dest)
     return sh(["git", "rev-parse", "HEAD"], cwd=dest).stdout.strip()
 
 
 def _schema_problems(org):
-    """Validate an org against org.schema.json (the single source of truth). Best-effort if jsonschema
-    is unavailable."""
-    try:
-        import jsonschema
-    except ImportError:
-        return []
+    """Schema validation is required, not silently skipped when a dependency is missing."""
     schema = json.loads((KERNEL / "plugin" / "org.schema.json").read_text(encoding="utf-8"))
     return [f"schema: {e.message}" for e in list(jsonschema.Draft7Validator(schema).iter_errors(org))[:3]]
 
@@ -103,17 +97,19 @@ def preflight(fixture: Path, manifest):
     problems = []
     sb = Path(tempfile.mkdtemp(prefix="preflight-"))
     try:
-        build_sandbox(fixture, sb)
         try:
-            org = json.loads((sb / "org.json").read_text(encoding="utf-8"))
-        except Exception as exc:
+            org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
             return [f"seed org.json unreadable: {exc}"]
         problems += _schema_problems(org)
+        if problems:
+            return problems
+        build_sandbox(fixture, sb)
         cov = ov.validate(org, ov.git_tracked(sb))
         if cov["status"] != "ok":
             problems += [f"baseline coverage: {v.get('rule')} {v.get('path') or v.get('evidence')}"
                          for v in cov["violations"][:3]]
-        agent = manifest.get("agent", "main")
+        agent = manifest.get("agent", org["root"])
         if agent != HOST_AGENT:  # the Host pseudo-agent is not a node and needs no def
             if agent not in {n["id"] for n in org.get("nodes", [])} and agent not in META_AGENTS:
                 problems.append(f"invoked agent {agent!r} is neither a seed node nor a meta-agent")
@@ -129,7 +125,7 @@ def preflight(fixture: Path, manifest):
                 if proc.returncode == 0:
                     problems.append("build_cmd already passes on the untouched seed (fixture is a no-op)")
             except subprocess.TimeoutExpired:
-                pass
+                problems.append("build_cmd timed out during fixture preflight")
     finally:
         shutil.rmtree(sb, ignore_errors=True)
     return problems
@@ -253,7 +249,7 @@ def _infra_error(events):
 HOST_AGENT = "host"  # invoke the Host session itself (no --agent), so it routes to main per its manual
 
 
-def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path, acting=None):
+def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path, acting=None, run_id=None):
     """The `copilot` argv for a run. `agent: host` omits --agent so the Host (copilot-instructions.md)
     performs the hardcoded entry to main — the only way to exercise the Host->main entry invariant. When
     `acting` is given, prepend the `AgentOrgActingNode:` marker to the prompt (simulating the parent's
@@ -261,7 +257,15 @@ def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path, acting
     agent = manifest.get("agent", "main")
     prompt = manifest["intent"]
     if acting:
-        prompt = f"AgentOrgActingNode: {acting}\n\n{prompt}"
+        header = f"AgentOrgActingNode: {acting}\n"
+        if run_id:
+            header += f"AgentOrgRunId: {run_id}\nAgentOrgWorktree: {sandbox}\n"
+        prompt = header + "\n" + prompt
+    if run_id:
+        prompt += (
+            f"\n\nThe shared evaluation worktree is {sandbox}. Use it for this task and every descendant. "
+            "The harness owns integration and cleanup; do not remove this workspace."
+        )
     cmd = ["copilot", "-p", prompt]
     if agent != HOST_AGENT:
         cmd += ["--agent", agent]
@@ -275,9 +279,9 @@ def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path, acting
     return cmd
 
 
-def invoke(manifest, sandbox: Path, env, model, effort, timeout, acting=None):
-    usage = sandbox / ".eval-usage.json"
-    cmd = build_invoke_cmd(manifest, sandbox, model, effort, usage, acting)
+def invoke(manifest, sandbox: Path, env, model, effort, timeout, acting=None, run_id=None):
+    usage = Path(env["COPILOT_HOME"]) / "eval-usage.json"
+    cmd = build_invoke_cmd(manifest, sandbox, model, effort, usage, acting, run_id)
     started = time.time()
     timed_out = False
     try:
@@ -326,17 +330,40 @@ def _parse_name_status_z(text):
     return out
 
 
-def capture(sandbox: Path, baseline_sha):
-    """The complete baseline→final change set: committed + staged + unstaged + untracked, rename/NUL-safe.
-    The sandbox is disposable and the agent has already run, so staging everything to fold untracked files
-    into a single diff against the baseline is safe."""
+def snapshot(sandbox: Path):
+    """Capture files without trusting ignore rules that the agent can edit."""
+    files = {}
+    for directory, directories, names in os.walk(sandbox, followlinks=False):
+        directories[:] = [name for name in directories if name not in {".git", "__pycache__"}]
+        for name in list(directories):
+            entry = Path(directory) / name
+            if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
+                directories.remove(name)
+                names.append(name)
+        for name in names:
+            if name == ".git":
+                continue
+            file = Path(directory) / name
+            linked = file.is_symlink() or (hasattr(file, "is_junction") and file.is_junction())
+            content = os.readlink(file).encode("utf-8") if linked else file.read_bytes()
+            files[file.relative_to(sandbox).as_posix()] = hashlib.sha256(content).hexdigest()
+    return files
+
+
+def capture(sandbox: Path, baseline_sha, baseline_files):
+    """Combine the Git diff with filesystem changes, including files hidden by new ignore rules."""
     sh(["git", "add", "-A"], cwd=sandbox)
     diff = sh(["git", "diff", "--cached", "--name-status", "-z", "--find-renames", baseline_sha],
               cwd=sandbox).stdout
     changed = _parse_name_status_z(diff)
+    current = snapshot(sandbox)
+    file_changes = {
+        name for name in baseline_files.keys() | current.keys()
+        if baseline_files.get(name) != current.get(name)
+    }
     commits = sh(["git", "rev-list", "--count", "HEAD"], cwd=sandbox).stdout.strip()
     new_commits = (int(commits) - 1) if commits.isdigit() else 0
-    return {"changed_paths": sorted({p for _, p in changed}),
+    return {"changed_paths": sorted({p for _, p in changed} | file_changes),
             "new_commits": new_commits,
             "made_worktree": (sandbox / ".worktrees").exists()}
 
@@ -500,40 +527,27 @@ def judge_run(manifest, result, env, model):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def install_hook_home(home: Path, mode: str = "enforce"):
-    """Create a per-run COPILOT_HOME with the agent-org command hooks installed at user level — plugin
-    hooks and extensions do not fire in headless -p, but user-level command hooks do — reproducing a
-    bootstrapped environment. `mode` is warn (allow + log foreign) or enforce (deny)."""
+def install_hook_home(home: Path, mode: str = "warn"):
+    """Install the canonical Windows hook configuration and skills in an isolated evaluation home."""
+    if mode not in {"enforce", "warn"}:
+        raise ValueError(f"unsupported hook mode: {mode}")
     hooks = home / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    ov = "python .github\\tools\\owner_validator.py"
-    ovb = "python .github/tools/owner_validator.py"
-    rec = f"if (Test-Path .github\\tools\\owner_validator.py) {{ {ov} --record-acting }}"
-    recb = f"if [ -f .github/tools/owner_validator.py ]; then {ovb} --record-acting; fi"
-    ps = (f"if (Test-Path .github\\tools\\owner_validator.py) "
-          f"{{ {ov} --hook --mode {mode} --org org.json }} else {{ '{{\"permissionDecision\":\"allow\"}}' }}")
-    bash = (f"if [ -f .github/tools/owner_validator.py ]; "
-            f"then {ovb} --hook --mode {mode} --org org.json; else echo '{{\"permissionDecision\":\"allow\"}}'; fi")
-    hook = {"version": 1, "hooks": {
-        "userPromptSubmitted": [{"type": "command", "powershell": rec, "bash": recb, "timeoutSec": 20}],
-        "preToolUse": [{"type": "command", "powershell": ps, "bash": bash, "timeoutSec": 20}],
-    }}
+    hook = json.loads((KERNEL / "plugin" / "hooks.json").read_text(encoding="utf-8"))
+    for entries in hook["hooks"].values():
+        for entry in entries:
+            entry["env"] = {"AGENT_ORG_HOOK_MODE": mode}
     (hooks / "agent-org.json").write_text(json.dumps(hook), encoding="utf-8")
+    shutil.copytree(KERNEL / "plugin" / "skills", home / "skills", dirs_exist_ok=True)
 
 
 def _acting_node(fixture: Path, manifest):
-    """The acting node to enforce containment for — only a LEAF invoked directly (not a parent, which
-    legitimately delegates across its subtree, nor the Host). None => the hook enforces only that writes
-    are not UNOWNED."""
-    agent = manifest.get("agent", "main")
+    """Parents need identity too: their writes to descendant-owned paths must be denied."""
+    org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+    agent = manifest.get("agent", org["root"])
     if agent == HOST_AGENT:
         return None
-    try:
-        org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    node = next((n for n in org.get("nodes", []) if n["id"] == agent), None)
-    return agent if (node is not None and not node.get("children")) else None
+    return agent if agent in {n["id"] for n in org["nodes"]} | META_AGENTS else None
 
 
 def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool = True, prepare=None,
@@ -548,48 +562,59 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
                     "runs": []}
     env = copilot_env()
     acting = _acting_node(fixture, manifest)
+    manifest.setdefault("agent", acting or HOST_AGENT)
     runs = []
     for _ in range(repeats):
         sandbox = Path(tempfile.mkdtemp(prefix=f"eval-{manifest['id']}-"))
         home = Path(tempfile.mkdtemp(prefix="chome-"))
-        install_hook_home(home, manifest.get("hook_mode", "enforce"))
+        install_hook_home(home, manifest.get("hook_mode", "warn"))
         run_env = {**env, "COPILOT_HOME": str(home)}
-        if acting:
-            run_env["AGENT_ORG_ACTING"] = acting
+        run_env.pop("AGENT_ORG_ACTING", None)
+        run_id = str(uuid.uuid4())
+        workspace = None
         try:
-            baseline_sha = build_sandbox(fixture, sandbox)
-            if prepare:
-                prepare(sandbox)  # e.g. strip the node's bundle for a payback cold arm
-                # fold the prepared state into the baseline so it is not counted as the agent's change
-                sh(["git", "add", "-A"], cwd=sandbox)
-                sh(["git", "-c", "user.email=eval@local", "-c", "user.name=eval",
-                    "commit", "-q", "--no-verify", "--amend", "-m", "chore: seed"], cwd=sandbox)
-                baseline_sha = sh(["git", "rev-parse", "HEAD"], cwd=sandbox).stdout.strip()
-            result = invoke(manifest, sandbox, run_env, model, effort, manifest.get("timeout", 300), acting)
-            result.update(capture(sandbox, baseline_sha))
-            # attribute the agent's edits with the immutable seed org (H3); validate the final org separately
-            baseline_org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+            baseline_sha = build_sandbox(fixture, sandbox, prepare)
+            baseline_org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
+            workspace = worktree.create(sandbox, run_id)
+            execution = Path(workspace["path"])
+            baseline_files = snapshot(execution)
+            result = invoke(manifest, execution, run_env, model, effort, manifest.get("timeout", 300), acting, run_id)
+            result.update(capture(execution, baseline_sha, baseline_files))
             try:
-                final_org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
-            except Exception:
-                final_org = None  # broken/deleted → coverage fails (H9), never crashes the run
-            result["grade"] = graders.grade(manifest, baseline_org, result["changed_paths"], sandbox,
-                                             result["response"], result["exit"], result["timed_out"],
-                                             final_org=final_org)
+                final_org = json.loads((execution / "org.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                final_org = None
+            result["grade"] = graders.grade(
+                manifest, baseline_org, result["changed_paths"], execution,
+                result["response"], result["exit"], result["timed_out"],
+                final_org=final_org, run_id=run_id, trajectory=result["trajectory"],
+            )
+            result["run_id"] = run_id
             mark_runaway(result, manifest)
-            add_calibration(result, baseline_org, sandbox, manifest.get("agent", "main"))
+            add_calibration(result, baseline_org, execution, manifest["agent"])
             result["trajectory_analysis"] = analyze_trajectory(result.get("trajectory", []))
+            if "expected_delegations" in manifest:
+                expected = set(manifest["expected_delegations"])
+                observed = set(result["trajectory_analysis"]["delegated_to"])
+                result["delegation_observation"] = {
+                    "advisory": True, "expected": sorted(expected), "missing": sorted(expected - observed),
+                    "observed": sorted(observed),
+                }
             if judge:
                 verdict = judge_run(manifest, result, env, model)
                 if verdict:
                     result["judge"] = verdict
             if keep:
-                result["sandbox"] = str(sandbox)
+                result["home"] = str(home)
+                result["sandbox"] = str(execution)
+                result["source_repo"] = str(sandbox)
             else:
                 result.pop("trajectory", None)  # keep the compact analysis; drop the raw call list
             runs.append(result)
         finally:
             if not keep:
+                if workspace:
+                    worktree.cleanup(sandbox, run_id, discard=True)
                 shutil.rmtree(sandbox, ignore_errors=True)
                 shutil.rmtree(home, ignore_errors=True)
     return {"case": manifest["id"], "unit": manifest.get("unit"), "agent": manifest.get("agent", "main"),

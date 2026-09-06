@@ -1,80 +1,91 @@
 ---
 name: bootstrap
-description: Adopt agent-org in the current repository as a non-invasive local overlay — install the kernel, seed the org, git-exclude the overlay, and verify coverage. Safe on an existing repo.
+description: Configure agent-org in an existing Windows Git repository without overwriting files or changing the index.
+user-invocable: true
 ---
 
 # Bootstrap agent-org
 
-Set up the current repository so it is **owned by agents**, as a **local overlay**: everything this
-skill writes is added to `.git/info/exclude`, so it never appears in the user's `git status` and is
-never committed — adopting agent-org does not touch the tracked tree. Idempotent and non-destructive:
-existing files are never overwritten.
+Use Windows and PowerShell. Configuration fields and legacy defaults are defined in
+[`org.schema.json`](..\..\org.schema.json). The canonical seed is `seed\org.json` inside the plugin;
+each target gets its own mutable `org.json`.
 
-Run from the repository root (PowerShell):
+## Ask before installing
 
-1. **Find the installed plugin** (works regardless of install path):
+Use `ask_user` to collect these **independent** choices. Do not conflate human collaboration with partial ownership.
+
+| Question | Choices / input |
+| --- | --- |
+| Which area should the org manage? | Full repository, or partial with a nonempty list of managed globs |
+| Who changes the managed area? | Agents only, or hybrid human + agent collaboration |
+| What is the root agent's name? | Ask for an id; default `main` |
+| How should the setup be stored? | Local-hidden, or tracked and ready for version control |
+
+For partial scope, obtain the actual globs before continuing. Explain that outside-scope paths stay unmanaged,
+whereas a missing owner inside scope remains a coverage problem. For hybrid collaboration, explain that drift
+reports changes and owners; it does not automatically reassign ownership.
+
+If `org.json` exists, read its configuration and present those choices instead of resetting the tree. The
+bootstrap command rejects conflicting selections. Local mode cannot hide files that Git already tracks.
+
+## Install
+
+1. Resolve this **loaded SKILL.md's location** from its skill metadata. Set `$skillFile` to that absolute path;
+   do not guess an installation directory or recursively search the user's home.
+
    ```pwsh
-   $base = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $env:USERPROFILE ".copilot" }
-   $plugin = Get-ChildItem (Join-Path $base "installed-plugins") -Recurse -Filter plugin.json -ErrorAction SilentlyContinue |
-     Where-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).name -eq "agent-org" } |
-     Select-Object -First 1 | ForEach-Object { $_.Directory.FullName }
-   if (-not $plugin) { throw "agent-org plugin not found under $base\installed-plugins" }
+   $bootstrap = Join-Path (Split-Path -Parent $skillFile) "..\..\tools\bootstrap.py"
    ```
 
-2. **Copy the runtime tools, seed defs, and enforcement extension into the repo** (skip existing):
+2. Translate the answers to the command's options; `python $bootstrap --help` is the CLI reference.
+   Set `$rootName`, `$managedGlobs`, `$collaboration`, and `$storage` from the answers, then run:
+
    ```pwsh
-   New-Item -ItemType Directory -Force -Path .github\tools, .github\agents, .github\instructions, .github\extensions | Out-Null
-   Copy-Item (Join-Path $plugin "tools\*") .github\tools\ -Recurse -Force
-   Copy-Item (Join-Path $plugin "extensions\*") .github\extensions\ -Recurse -Force
-   Get-ChildItem (Join-Path $plugin "agents") -Filter *.md | ForEach-Object {
-     $d = Join-Path ".github\agents" $_.Name; if (-not (Test-Path $d)) { Copy-Item $_.FullName $d }
-   }
-   $man = ".github\instructions\agent-org.instructions.md"
-   if (-not (Test-Path $man)) { Copy-Item (Join-Path $plugin "instructions\agent-org.instructions.md") $man }
-   pip install -q -r (Join-Path $plugin "tools\requirements.txt")   # pathspec, one-time
+   python $bootstrap --repo (Get-Location).Path --root-name $rootName --scope $managedGlobs `
+     --collaboration $collaboration --storage $storage
    ```
 
-3. **Create the seed `org.json`** (only if absent) — root `main` owns the whole repo:
+   This preflights all destination collisions, preserves matching files, and reports `created` versus `existing`.
+   Generated definitions and copied skills follow the [invocation policy](..\agent-org-design\SKILL.md#21-nodes-and-roles).
+   Stop on a conflict; never overwrite a file, hand-edit the live tree to force a pass, or stage unrelated work.
+   No Git initialization, commit, package install, or global Git/Copilot configuration change is performed.
+
+3. Validate the installed tree:
+
    ```pwsh
-   if (-not (Test-Path org.json)) {
-     @'
-   { "version": 3, "root": "main", "nodes": [
-     { "id": "main", "parent": null, "children": [], "mode": "Leaf",
-       "charter": { "domain": ["**"], "concerns": ["the entire repository until the first split"], "excludes": [] } } ] }
-   '@ | Set-Content -LiteralPath org.json -Encoding utf8
-   }
+   python .github\agent-org\tools\owner_validator.py --root . --org org.json
    ```
 
-4. **Git-exclude the overlay** (local only, never committed), idempotently:
+   Only if this fails because a Python dependency is missing, install the runtime requirements and retry:
+
    ```pwsh
-   $exclude = ".git\info\exclude"
-   $lines = @("/org.json", "/.github/tools/", "/.github/agents/", "/.github/instructions/", "/.github/extensions/", "/.worktrees/")
-   $have = if (Test-Path $exclude) { Get-Content $exclude } else { @() }
-   foreach ($l in $lines) { if ($have -notcontains $l) { Add-Content -LiteralPath $exclude -Value $l } }
+   python -m pip install -r .github\agent-org\tools\requirements.txt
    ```
 
-5. **Install the enforcement hooks** (user-level, so they fire in headless `-p` — plugin-contributed
-   hooks and extensions do not; the extension copied in step 2 is the interactive host, these command
-   hooks are the proven fallback). Both no-op outside an agent-org repo, so they are safe globally:
-   ```pwsh
-   $hooks = Join-Path $base "hooks"; New-Item -ItemType Directory -Force -Path $hooks | Out-Null
-   $ov = 'python .github\tools\owner_validator.py'
-   $rec = "if (Test-Path .github\tools\owner_validator.py) { $ov --record-acting }"     # userPromptSubmitted
-   $warn = "if (Test-Path .github\tools\owner_validator.py) { $ov --hook --mode warn --org org.json } else { '{""permissionDecision"":""allow""}' }"
-   $ovb = 'python .github/tools/owner_validator.py'
-   $recb = "if [ -f .github/tools/owner_validator.py ]; then $ovb --record-acting; fi"
-   $warnb = "if [ -f .github/tools/owner_validator.py ]; then $ovb --hook --mode warn --org org.json; else echo '{\""permissionDecision\"":\""allow\""}'; fi"
-   $hook = @{ version = 1; hooks = @{
-     userPromptSubmitted = @(@{ type = 'command'; powershell = $rec;  bash = $recb;  timeoutSec = 20 })
-     preToolUse          = @(@{ type = 'command'; powershell = $warn; bash = $warnb; timeoutSec = 20 })
-   } }
-   $hook | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $hooks 'agent-org.json') -Encoding utf8
-   ```
+4. Report the chosen configuration, created/existing files, exclude-file location, and actual validation result.
+   Surface coverage failures without silently reassigning paths. Reload the session to discover the installed
+   agents, hooks, and extension; verify their behavior rather than claiming they intercept every kind of write.
+   Before the first task, follow the [worktree prerequisites](..\..\tools\README.md#session-worktree).
 
-6. **Verify coverage** and report:
-   ```pwsh
-   python .github\tools\owner_validator.py --root . --org org.json
-   ```
+## Installed layout
 
-Report what was created vs. already present, and the oracle verdict. If coverage is not `ok`, surface
-the violations — do not hand-edit `org.json` to force a pass.
+| Target path | Contents |
+| --- | --- |
+| `org.json` | Mutable target configuration and live tree |
+| `.github\agent-org\` | Runtime tools, self-contained Parent/Leaf loops, schema, seed, template, and on-demand skills |
+| `.github\agents\` | Definitions for live nodes and `splitter`; unrelated agents are preserved |
+| `.github\extensions\agent-org\` | Extension and its runtime helper modules |
+| `.github\hooks\agent-org.json` | Copy of the canonical plugin hooks |
+| `.github\instructions\` | Base policy plus only the selected scope and collaboration profiles |
+
+The renderer always copies `agent-org.instructions.md`, then selects `agent-org.scope-full.instructions.md`
+for scope `["**"]` or `agent-org.scope-partial.instructions.md` otherwise. The `collaboration` choice selects
+`agent-org.collaboration-agents.instructions.md` or `agent-org.collaboration-hybrid.instructions.md`.
+
+Local mode adds exact owned files to the real Git common directory's `info\exclude`, including when `.git`
+is a linked-worktree file. It does not hide whole shared agent or instruction directories. Tracked mode adds
+no overlay exclusions. Both modes exclude runtime worktrees and caches; neither changes the index.
+
+The installed bootstrap can reuse its copied seed, template, tools, and **selected** profiles, including
+rendering new nodes after a split. To bootstrap with a different profile selection, use the original plugin's
+bootstrap skill. Unselected profiles and evaluation code are not copied into targets.
