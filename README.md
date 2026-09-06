@@ -23,12 +23,13 @@ layout. Configuration and compatibility defaults are defined in the [schema](plu
 ## Use
 
 The Host resolves the configured root from the target's `org.json`. Each node explicitly reads a small Leaf or
-Parent operating file; both share one common core. The [full design](plugin\skills\agent-org-design\SKILL.md) is
-an on-demand reference, not mandatory task context.
+Parent operating file through a `loop:` reference in its definition's Markdown body. Each role file is
+self-contained. The [full design](plugin\skills\agent-org-design\SKILL.md) is an on-demand reference.
 
 The root creates one session worktree and passes its path to all descendants. Parents delegate descendant-owned
 implementation and reconcile foreign changes before root integration. See the
-[operating files](plugin\skills\agent-org-loop\SKILL.md) and [runnable tool commands](plugin\tools\README.md).
+[Leaf](plugin\loops\leaf.md) and [Parent](plugin\loops\parent.md) operating files and
+[runnable tool commands](plugin\tools\README.md).
 
 Hooks classify explicit file-tool paths; they are not a security boundary for arbitrary shell writes. Shared
 worktrees isolate root sessions, not sibling operations, and do not prove child authorship. Runtime helpers and

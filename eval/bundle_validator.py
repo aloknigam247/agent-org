@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -131,11 +132,15 @@ def check_agent_roles(org, root):
         except yaml.YAMLError as error:
             problems.append(f"invalid agent definition {node['id']}: {error}")
             continue
-        loop = fields.get("loop", "") if isinstance(fields, dict) else ""
+        body = header[2] if len(header) == 3 and not header[0].strip() else ""
+        references = re.findall(r"^loop:[ \t]*(.*?)[ \t]*\r?$", body, re.MULTILINE)
         expected = f".github/agent-org/loops/{node['mode'].lower()}.md"
-        if not isinstance(loop, str) or loop.replace("\\", "/") != expected:
+        if (
+            not isinstance(fields, dict) or "loop" in fields or len(references) != 1
+            or references[0].replace("\\", "/") != expected
+        ):
             problems.append(f"{node['id']} must reference {expected}")
-        elif not (Path(root) / loop).is_file():
+        elif not Path(root).joinpath(*expected.split("/")).is_file():
             problems.append(f"missing loop file for {node['id']}")
     return problems
 

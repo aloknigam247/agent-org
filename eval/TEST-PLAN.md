@@ -28,8 +28,9 @@ design's examples. Deterministic failures must be resolved before interpreting a
   Reject no-op results when the fixture requires changes. Keep baseline ownership separate from final validation.
 - **Policy:** Assert both a denied attempt and an unchanged target when testing prevention. Assert successful output
   and a completed audit record when testing warning mode. Foreign records must match the actor, owner, and run.
-- **Roles:** Promoting a Leaf changes its agent definition's `loop:` reference to the Parent file; generated children
-  reference the Leaf file. Check the referenced files exist, not just their names.
+- **Roles:** Promoting a Leaf changes its agent definition's Markdown-body `loop:` reference to the Parent file;
+  generated children reference the Leaf file. Reject frontmatter-only or duplicate pointers. Both role files
+  contain the same shared sections, guarded by `tests\test_role_instructions.py`; neither needs a common-file read.
 - **Isolation:** A shared worktree separates root sessions, not siblings within one session. The root must avoid
   overlapping sibling writes and wait for children before integration. Do not attribute writers by path.
 - **Hybrid:** Compare content to the last reconciled snapshot, not merely `HEAD`; human changes may already be committed.

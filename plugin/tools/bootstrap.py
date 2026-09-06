@@ -83,7 +83,7 @@ def _assets(source):
         "extension": root.parent / "extensions" / "agent-org" if installed else root / "extensions" / "agent-org",
         "hooks": root.parent / "hooks" / "agent-org.json" if installed else root / "hooks.json",
         "instructions": root.parent / "instructions" if installed else root / "instructions",
-        "loops": root / "loops" if installed else root / "skills" / "agent-org-loop",
+        "loops": root / "loops",
         "root": root,
         "template": root / "templates" / "_node.template.md" if installed else root / "agents" / "_node.template.md",
     }
@@ -106,7 +106,7 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
     for node in org["nodes"]:
         replacements = {
             "id": node["id"],
-            "loop": f".github/agent-org/loops/{node['mode'].lower()}.md",
+            "loop": f".github\\agent-org\\loops\\{node['mode'].lower()}.md",
             "role": node["mode"],
         }
         rendered = template
@@ -127,7 +127,7 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
     ):
         copy(f".github/instructions/{name}", assets["instructions"] / name)
 
-    for name in ("SKILL.md", "common.md", "leaf.md", "parent.md"):
+    for name in ("leaf.md", "parent.md"):
         copy(f".github/agent-org/loops/{name}", assets["loops"] / name)
     for name in ("agent-org-design", "bootstrap", "wiki-curate"):
         copy(f".github/agent-org/skills/{name}/SKILL.md", assets["root"] / "skills" / name / "SKILL.md")

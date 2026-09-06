@@ -404,15 +404,57 @@ def test_role_promotion_requires_updating_loop_reference(tmp_path):
         (loops / f"{role}.md").write_text(role, encoding="utf-8")
     for node in current["nodes"]:
         (agents / f"{node['id']}.md").write_text(
-            "---\nloop: .github/agent-org/loops/leaf.md\n---\n", encoding="utf-8",
+            f"---\nname: {node['id']}\n---\nloop: .github/agent-org/loops/leaf.md\n", encoding="utf-8",
         )
     assert graders.bv.check_agent_roles(current, tmp_path) == [
         "director must reference .github/agent-org/loops/parent.md"
     ]
     (agents / "director.md").write_text(
-        "---\nloop: .github/agent-org/loops/parent.md\n---\n", encoding="utf-8",
+        "---\nname: director\n---\nloop: .github/agent-org/loops/parent.md\n", encoding="utf-8",
     )
     assert graders.bv.check_agent_roles(current, tmp_path) == []
+
+
+@pytest.mark.parametrize("role", ["Leaf", "Parent"])
+@pytest.mark.parametrize("form", [
+    "body", "both", "duplicate-body", "duplicate-empty", "empty", "frontmatter-only", "missing", "self-reference",
+    "wrong-role",
+])
+def test_role_grader_requires_one_body_reference(file_tree, role, form):
+    expected = f".github\\agent-org\\loops\\{role.lower()}.md"
+    header = "name: entry\n"
+    if form in {"both", "frontmatter-only"}:
+        header += f"loop: {expected}\n"
+    body = f"Read and follow this operating file:\nloop: {expected}\n"
+    if form == "duplicate-body":
+        body += f"loop: {expected}\n"
+    elif form == "duplicate-empty":
+        body += "loop:\n"
+    elif form == "empty":
+        body = "loop:\n"
+    elif form in {"frontmatter-only", "missing"}:
+        body = ""
+    elif form == "self-reference":
+        body = "loop: .github\\agents\\entry.md\n"
+    elif form == "wrong-role":
+        other = "parent" if role == "Leaf" else "leaf"
+        body = f"loop: .github\\agent-org\\loops\\{other}.md\n"
+    root = file_tree({
+        expected.replace("\\", "/"): role,
+        ".github/agents/entry.md": f"---\n{header}---\n\n{body}",
+    })
+    org = {"nodes": [{"id": "entry", "mode": role}]}
+    problems = graders.bv.check_agent_roles(org, root)
+    assert bool(problems) is (form != "body"), problems
+
+
+def test_role_grader_requires_the_referenced_file(file_tree):
+    root = file_tree({
+        ".github/agents/entry.md": "---\nname: entry\n---\nloop: .github\\agent-org\\loops\\leaf.md\n",
+    })
+    assert graders.bv.check_agent_roles({"nodes": [{"id": "entry", "mode": "Leaf"}]}, root) == [
+        "missing loop file for entry"
+    ]
 
 
 def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch):

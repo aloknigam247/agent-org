@@ -69,7 +69,8 @@ reset a shared worktree that contains siblings' changes.
 ### 2.5 Session worktrees
 
 The lifecycle, descendant context protocol, and isolation limits are defined in
-`.github\agent-org\loops\common.md`; the [tool reference](..\..\tools\README.md) gives setup prerequisites.
+each self-contained role file under `.github\agent-org\loops`; the
+[tool reference](..\..\tools\README.md) gives setup prerequisites.
 
 ### 2.6 Bootstrap and storage
 
@@ -87,7 +88,7 @@ child's reported file list. See the [tool reference](..\..\tools\README.md) for 
 
 ### 2.8 Boundaries and reconciliation
 
-See the common core for boundary policy, the Parent loop for reconciliation, and the selected collaboration
+See the role files for boundary policy, the Parent loop for reconciliation, and the selected collaboration
 profile for between-run drift and checkpoint timing.
 
 ## 3. Durable node bundles

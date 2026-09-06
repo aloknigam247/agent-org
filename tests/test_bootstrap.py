@@ -41,6 +41,14 @@ def frontmatter(content):
     return yaml.safe_load(content.decode("utf-8-sig").split("---", 2)[1])
 
 
+def loop_reference(content):
+    assert "loop" not in frontmatter(content)
+    body = content.decode("utf-8-sig").split("---", 2)[2]
+    references = re.findall(r"^loop: (.+)$", body, re.MULTILINE)
+    assert len(references) == 1
+    return references[0].strip().replace("\\", "/")
+
+
 def live_tree():
     return {
         "collaboration": "hybrid",
@@ -135,9 +143,9 @@ def test_generated_node_can_resolve_loop_without_injected_frontmatter():
     org = seed()
     org["root"] = "navigator"
     org["nodes"][0]["id"] = "navigator"
-    definition = bootstrap.runtime_files(org, source=PLUGIN)[".github/agents/navigator.md"].decode("utf-8")
-    body = definition.split("---", 2)[2]
-    assert r".github\agents\navigator.md" in body and "loop" in body
+    definition = bootstrap.runtime_files(org, source=PLUGIN)[".github/agents/navigator.md"]
+    assert loop_reference(definition) == ".github/agent-org/loops/leaf.md"
+    assert b".github\\agents\\navigator.md" not in definition
 
 
 @pytest.mark.parametrize("scope", [None, ["src/**"]], ids=["full", "partial"])
@@ -200,12 +208,11 @@ def test_custom_root_is_rendered_without_default_agent(repo):
     org = result["org"]
     assert org["root"] == org["nodes"][0]["id"] == "product-root"
     assert not (repo / ".github" / "agents" / "main.md").exists()
-    definition = (repo / ".github" / "agents" / "product-root.md").read_text(encoding="utf-8")
-    assert "name: product-root\n" in definition
-    assert "loop: .github/agent-org/loops/leaf.md\n" in definition
-    assert r".github\agents\product-root.md" in definition
-    assert "then read and follow that file" in definition
-    assert "does not automatically load" in definition
+    definition = (repo / ".github" / "agents" / "product-root.md").read_bytes()
+    assert frontmatter(definition)["name"] == "product-root"
+    assert loop_reference(definition) == ".github/agent-org/loops/leaf.md"
+    assert b".github\\agents\\product-root.md" not in definition
+    assert b"Read and follow this operating file:" in definition
     assert (PLUGIN / "seed" / "org.json").read_bytes() == original_seed
 
 
@@ -256,9 +263,10 @@ def test_non_root_promotion_and_new_children_remain_internal(repo):
     org["version"] += 1
     rendered = bootstrap.runtime_files(org, source=repo / ".github" / "agent-org")
     for node in org["nodes"]:
-        fields = frontmatter(rendered[f".github/agents/{node['id']}.md"])
+        definition = rendered[f".github/agents/{node['id']}.md"]
+        fields = frontmatter(definition)
         assert fields["user-invocable"] is (node["id"] == org["root"])
-        assert fields["loop"].endswith(f"/{node['mode'].lower()}.md")
+        assert loop_reference(definition).endswith(f"/{node['mode'].lower()}.md")
     assert frontmatter(rendered[".github/agents/splitter.md"])["user-invocable"] is False
 
 
@@ -280,15 +288,17 @@ def test_runtime_rendering_uses_live_roles_and_stable_scope(tmp_path):
     assert "org.json" not in files
     assert json.dumps(org) == before
     for node in org["nodes"]:
-        definition = files[f".github/agents/{node['id']}.md"].decode("utf-8")
-        loop = re.search(r"^loop: (.+)$", definition, re.MULTILINE).group(1)
+        loop = loop_reference(files[f".github/agents/{node['id']}.md"])
         assert loop == f".github/agent-org/loops/{node['mode'].lower()}.md"
         assert loop in files
     assert ".github/instructions/agent-org.scope-partial.instructions.md" in files
     assert ".github/instructions/agent-org.scope-full.instructions.md" not in files
     assert ".github/agents/_node.template.md" not in files
     assert ".github/agent-org/templates/_node.template.md" in files
-    assert ".github/agent-org/loops/common.md" in files
+    assert {name for name in files if name.startswith(".github/agent-org/loops/")} == {
+        ".github/agent-org/loops/leaf.md", ".github/agent-org/loops/parent.md"
+    }
+    assert all(Path(name).name != "AGENTS.md" for name in files)
     assert not any("bundle_validator" in path or "__pycache__" in path for path in files)
     assert files[".github/hooks/agent-org.json"] == (PLUGIN / "hooks.json").read_bytes()
     assert files[".github/extensions/agent-org/extension.mjs"] == (
@@ -480,9 +490,9 @@ def test_existing_split_tree_is_not_reset(repo):
     )
     assert result["org"] == org
     assert (repo / "org.json").read_bytes() == original
-    assert "loop: .github/agent-org/loops/parent.md" in (
-        repo / ".github" / "agents" / "coordinator.md"
-    ).read_text(encoding="utf-8")
+    assert loop_reference((repo / ".github" / "agents" / "coordinator.md").read_bytes()) == (
+        ".github/agent-org/loops/parent.md"
+    )
 
 
 def test_installed_source_can_render_promoted_roles_and_rebootstrap(repo):

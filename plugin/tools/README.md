@@ -72,7 +72,7 @@ python .github\agent-org\tools\owner_validator.py --drift --root .
 python .github\agent-org\tools\owner_validator.py --checkpoint --root .
 ```
 
-Hook configuration comes from `hooks.json`; the common operating core defines boundary policy and its limitations.
+Hook configuration comes from `hooks.json`; each role file defines boundary policy and its limitations.
 
 ## Session worktree
 
@@ -80,7 +80,7 @@ Creation requires a clean source worktree on a named branch with an existing com
 review and commit the generated overlay through the repository's normal workflow before starting a session.
 Bootstrap does not do this for you. Do not automatically stage, commit, or stash unrelated source changes.
 
-Follow `.github\agent-org\loops\common.md` for the root-only lifecycle and per-call workspace context.
+Follow your `.github\agent-org\loops\leaf.md` or `parent.md` for root-only lifecycle and per-call workspace context.
 
 ```pwsh
 python .github\agent-org\tools\worktree.py --help

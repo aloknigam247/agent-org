@@ -21,8 +21,7 @@ The selected scope and collaboration profiles supply only their respective polic
 inside the managed area and gates organizational changes rather than implementing managed feature work.
 
 Start the root task prompt with `AgentOrgActingNode: <org.root>`. Every live node must explicitly read the
-repository-relative file named by its definition's `loop` field. This is an instruction to read a file, not a
-Copilot frontmatter auto-loading feature.
+repository-relative file named by the `loop:` line in its definition's Markdown body.
 
 Handle kernel governance only when the human explicitly requests it. After bootstrap, only `splitter` may
 apply an approved organization change. Present each SplitProposal via `ask_user` for approve / edit / reject;

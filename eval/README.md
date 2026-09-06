@@ -39,7 +39,7 @@ Pin an available `--model` and `--effort` when comparing runs. Live agent runs c
 | `agent` | Org node to invoke; defaults to the seed root. `host` omits `--agent`. |
 | `allowed_paths`, `forbidden_paths` | Permitted and prohibited changed-path patterns. |
 | `build_cmd`, `build_timeout` | Objective result assertion and its time limit. |
-| `check_role_refs` | Check every node's `loop:` reference against its final Leaf/Parent role. |
+| `check_role_refs` | Check the single Markdown-body `loop:` reference against the node's final Leaf/Parent role. |
 | `expected_delegations` | Expected child calls, reported as advisory observations rather than inferred from files. |
 | `expected_denied` | Expected attempted denials: entries with `path`, `owner`, and `acting`. |
 | `expected_foreign` | Expected completed warnings with `path`, `owner`, and `acting`; `[]` requires none. |

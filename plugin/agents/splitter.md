@@ -42,9 +42,9 @@ seams: ["parent-owned interface artifacts, if needed"]
    according to `documents` and `sources`. Keep cross-child interface artifacts and their contract overviews
    with the common parent. Update each affected `owner`, source reference, and manifest.
 3. **Render roles.** Use `.github\agent-org\templates\_node.template.md`, or the bootstrap module's
-   `runtime_files(proposed_org)` renderer. Update the promoted node's definition to
-   `loop: .github/agent-org/loops/parent.md`. Every new child must reference
-   `loop: .github/agent-org/loops/leaf.md`. Keep only a live-charter pointer in definitions.
+   `runtime_files(proposed_org)` renderer. Set the promoted node's single Markdown-body reference to
+   `loop: .github\agent-org\loops\parent.md`. Every new child must reference
+   `loop: .github\agent-org\loops\leaf.md`. Do not put `loop` in frontmatter or add a self-reference.
    Preserve `user-invocable: true` only for `org.root`; all other nodes remain
    `user-invocable: false`, including newly created children and promoted non-root Parents.
 4. **Apply and revalidate.** Write the proposed `org.json` and affected definitions together, then validate

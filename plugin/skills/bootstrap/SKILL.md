@@ -72,11 +72,15 @@ bootstrap command rejects conflicting selections. Local mode cannot hide files t
 | Target path | Contents |
 | --- | --- |
 | `org.json` | Mutable target configuration and live tree |
-| `.github\agent-org\` | Runtime tools, role loops, schema, seed, template, and on-demand skills |
+| `.github\agent-org\` | Runtime tools, self-contained Parent/Leaf loops, schema, seed, template, and on-demand skills |
 | `.github\agents\` | Definitions for live nodes and `splitter`; unrelated agents are preserved |
 | `.github\extensions\agent-org\` | Extension and its runtime helper modules |
 | `.github\hooks\agent-org.json` | Copy of the canonical plugin hooks |
 | `.github\instructions\` | Base policy plus only the selected scope and collaboration profiles |
+
+The renderer always copies `agent-org.instructions.md`, then selects `agent-org.scope-full.instructions.md`
+for scope `["**"]` or `agent-org.scope-partial.instructions.md` otherwise. The `collaboration` choice selects
+`agent-org.collaboration-agents.instructions.md` or `agent-org.collaboration-hybrid.instructions.md`.
 
 Local mode adds exact owned files to the real Git common directory's `info\exclude`, including when `.git`
 is a linked-worktree file. It does not hide whole shared agent or instruction directories. Tracked mode adds
