@@ -26,12 +26,8 @@ python .github\agent-org\tools\bootstrap.py @bootstrapArgs
 
 Omitted legacy fields retain the CLI defaults instead of being passed as null options.
 
-The copied CLI uses `.github\agent-org` for its seed, template, loops, skills, schema, and tools. It reads the
-selected profiles, splitter, hooks, and extension from their sibling `.github` discovery directories. Neither
-same-configuration CLI reruns nor the Python API's role rendering need the original plugin.
-
-Only selected instruction profiles are copied. Use the original plugin's bootstrap skill to select different
-profiles for another target. Existing configuration conflicts are rejected, not migrated.
+The copied CLI supports same-configuration reruns and role rendering without the original plugin. For installed
+paths, profile selection, and conflict handling, see the [bootstrap skill](..\skills\bootstrap\SKILL.md#installed-layout).
 
 Python APIs in `bootstrap.py`:
 
@@ -76,9 +72,7 @@ python .github\agent-org\tools\owner_validator.py --drift --root .
 python .github\agent-org\tools\owner_validator.py --checkpoint --root .
 ```
 
-Canonical hook commands come from the plugin's `hooks.json`; bootstrap copies them rather than reconstructing
-them or changing global hooks. See the common operating core for the explicit-file-tool boundary policy and
-its shell-enforcement limitations. The bundle validator is evaluation-only and is not copied.
+Hook configuration comes from `hooks.json`; the common operating core defines boundary policy and its limitations.
 
 ## Session worktree
 
@@ -86,9 +80,7 @@ Creation requires a clean source worktree on a named branch with an existing com
 review and commit the generated overlay through the repository's normal workflow before starting a session.
 Bootstrap does not do this for you. Do not automatically stage, commit, or stash unrelated source changes.
 
-The root-only lifecycle is defined in the installed `.github\agent-org\loops\common.md`. Follow that reference
-for creation, audit, integration, and cleanup. Reuse the returned descriptor and absolute paths in every tool call;
-do not rely on variables or `Set-Location` from an earlier shell invocation.
+Follow `.github\agent-org\loops\common.md` for the root-only lifecycle and per-call workspace context.
 
 ```pwsh
 python .github\agent-org\tools\worktree.py --help

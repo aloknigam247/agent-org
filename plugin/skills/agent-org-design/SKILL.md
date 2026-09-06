@@ -6,8 +6,7 @@ user-invocable: false
 
 # Agent-org design reference
 
-Read this when a design question requires it, not before every task. `org.json` is live per-target state.
-The operating rules live in the small files selected by each generated definition's `loop` reference.
+`org.json` is live per-target state.
 
 ## 1. Ownership
 
@@ -27,8 +26,7 @@ The Host reads the entry id from `org.root`, routes managed work, and gates grow
 charter; a Parent partitions work among its direct children and owns its retained shared set. `splitter` is a
 meta-agent for approved organization changes, not a domain owner.
 
-See the installed Host instructions and `.github\agent-org\loops` for the operating rules. The agent must
-explicitly read its `loop` file; a custom frontmatter field does not cause Copilot to load it.
+Operating procedures live in the installed Host instructions and `.github\agent-org\loops`.
 
 Only `org.root` (default `main`) and the `bootstrap` skill are user-invocable entry points. Other agents,
 including `splitter`, and all other skills use `user-invocable: false`. Keep them available for agent
@@ -70,20 +68,13 @@ reset a shared worktree that contains siblings' changes.
 
 ### 2.5 Session worktrees
 
-The root lifecycle and descendant context protocol are defined once in the common operating core under
-`.github\agent-org\loops`. The [tool reference](..\..\tools\README.md) gives runnable lifecycle commands.
-
-This provides isolation between root sessions. It is not proof of which child wrote a change, serialization
-among siblings, or enforcement of arbitrary shell writes.
+The lifecycle, descendant context protocol, and isolation limits are defined in
+`.github\agent-org\loops\common.md`; the [tool reference](..\..\tools\README.md) gives setup prerequisites.
 
 ### 2.6 Bootstrap and storage
 
-The [bootstrap skill](..\bootstrap\SKILL.md) owns the adoption procedure and installed layout. The canonical
-plugin seed is used only to initialize a target; it is not a shared mutable organization.
-
-Agent discovery and instruction discovery remain in their normal repository directories. Runtime machinery,
-role files, and templates are separate from node-owned bundles. Local storage must not force excluded state
-into commits; tracked storage makes the overlay available for ordinary version control.
+See the [bootstrap skill](..\bootstrap\SKILL.md) for adoption, installed layout, and local/tracked storage.
+The canonical plugin seed initializes each target's mutable organization; targets never share live state.
 
 ### 2.7 Owner validation
 
@@ -96,9 +87,8 @@ child's reported file list. See the [tool reference](..\..\tools\README.md) for 
 
 ### 2.8 Boundaries and reconciliation
 
-The relationship-based allow/deny/warn policy is defined in the common operating core. Hook and extension
-records aid reconciliation; they do not replace review of actual changes. The Parent loop specifies owner
-routing, and the selected collaboration profile supplies any between-run drift and checkpoint steps.
+See the common core for boundary policy, the Parent loop for reconciliation, and the selected collaboration
+profile for between-run drift and checkpoint timing.
 
 ## 3. Durable node bundles
 
@@ -126,9 +116,8 @@ or when it documents something just changed. Drop facts cheap to re-read from so
 
 ### 3.3 Wiki maintenance
 
-Follow [wiki-curate](..\wiki-curate\SKILL.md) when recording a candidate note. Prefer few useful pages; filter,
-type, and route an entry before appending it. Consolidate a noisy page when needed rather than preserving a
-lossless transcript. Remove dead artifacts instead of keeping an unused cache.
+Follow [wiki-curate](..\wiki-curate\SKILL.md) for note selection, recording, and consolidation. Remove dead
+artifacts instead of keeping an unused cache.
 
 ### 3.4 Single-writer and freshness
 
@@ -170,9 +159,7 @@ A tool belongs under `tools\<owner>\` with a row in that owner's `manifest.md`:
 
 ### 3.6 Bundle partition on split
 
-The splitter procedure owns repartitioning and role-reference updates. Move an artifact according to the
-code it documents; update ownership and source references together. Shared contracts stay with their common
-parent. Keep the split's metadata and bundle changes consistent with the selected storage mode.
+Follow the splitter procedure for bundle repartitioning, role-reference updates, and persistence.
 
 ### 3.7 Validation limits
 

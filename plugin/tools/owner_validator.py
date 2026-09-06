@@ -98,9 +98,10 @@ def managed(org, path):
 
 def ownership(org, path):
     path = normalize(path)
-    hits = owners_of(compile_nodes(org.get("nodes", [])), path) if managed(org, path) else []
+    in_scope = managed(org, path)
+    hits = owners_of(compile_nodes(org.get("nodes", [])), path) if in_scope else []
     status = "owned" if len(hits) == 1 else "overlap" if hits else "unowned"
-    if not managed(org, path):
+    if not in_scope:
         status = "unmanaged"
     return {"path": path, "owner": hits[0] if len(hits) == 1 else None, "matches": hits, "status": status}
 
@@ -174,19 +175,30 @@ def check_tree(org):
     return violations
 
 
-def check_coverage(org, paths):
-    """Exactly-one-owner over the given path set: 0 owners = uncovered (UNOWNED), >1 = overlap."""
+_COVERAGE_ONLY = object()
+
+
+def _check_paths(org, paths, acting=_COVERAGE_ONLY):
     violations = []
     compiled = compile_nodes(org.get("nodes", []))
     for path in paths:
         if not managed(org, path):
             continue
         hits = owners_of(compiled, path)
-        if len(hits) == 0:
-            violations.append({"rule": "uncovered", "path": normalize(path), "evidence": "UNOWNED: matches no node's effective domain"})
+        if not hits:
+            violations.append({"rule": "uncovered", "path": normalize(path),
+                               "evidence": "UNOWNED: matches no node's effective domain"})
         elif len(hits) > 1:
             violations.append({"rule": "overlap", "path": normalize(path), "evidence": f"owned by {hits}"})
+        elif acting is not _COVERAGE_ONLY and hits[0] != acting:
+            violations.append({"rule": "containment", "path": normalize(path), "acting": acting, "owner": hits[0],
+                               "evidence": f"changed a path owned by {hits[0]}, not acting node {acting}"})
     return violations
+
+
+def check_coverage(org, paths):
+    """Exactly-one-owner over the given path set: 0 owners = uncovered (UNOWNED), >1 = overlap."""
+    return _check_paths(org, paths)
 
 
 def validate(org, paths):
@@ -197,18 +209,7 @@ def validate(org, paths):
 
 def check_containment(org, acting, paths):
     """Integration gate (s1b): assert every changed path is owned by the acting node."""
-    violations = []
-    compiled = compile_nodes(org.get("nodes", []))
-    for path in paths:
-        if not managed(org, path):
-            continue
-        hits = owners_of(compiled, path)
-        if len(hits) == 0:
-            violations.append({"rule": "uncovered", "path": normalize(path), "evidence": "UNOWNED: matches no node's effective domain"})
-        elif len(hits) > 1:
-            violations.append({"rule": "overlap", "path": normalize(path), "evidence": f"owned by {hits}"})
-        elif hits[0] != acting:
-            violations.append({"rule": "containment", "path": normalize(path), "acting": acting, "owner": hits[0], "evidence": f"changed a path owned by {hits[0]}, not acting node {acting}"})
+    violations = _check_paths(org, paths, acting)
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 

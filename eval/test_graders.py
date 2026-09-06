@@ -1,18 +1,9 @@
 #!/usr/bin/env python
-"""Fresh self-tests for the eval graders (grade()): verdict logic over synthetic sandboxes.
-
-Independent of the design examples and of eval/fixtures. Each case builds a tiny git sandbox and a
-tree-valid three-node org (a retained parent + two leaves) so coverage stays clean, then drives one
-verdict at a time. In particular this locks in the invocation-health and build-outcome gates, so a
-crashed or no-op run can never score a vacuous pass.
-
-Run: ``python eval/test_graders.py`` — prints a one-line summary and exits non-zero if any case fails.
-"""
+"""Independent grader and harness regressions over synthetic repositories."""
 
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,23 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graders  # noqa: E402
 import run  # noqa: E402
 
-CASES = []
-_DIRS = []
-
-
-@pytest.fixture(autouse=True)
-def cleanup_sandboxes():
-    yield
-    for directory in _DIRS:
-        directory.cleanup()
-    _DIRS.clear()
-
-
-def case(fn):
-    CASES.append(fn)
-    return fn
-
-
 def _sh(args, cwd):
     subprocess.run(args, cwd=cwd, capture_output=True, text=True)
 
@@ -53,23 +27,6 @@ def _sha(cwd):
 def _commit(cwd, msg):
     _sh(["git", "add", "-A"], cwd)
     _sh(["git", "-c", "user.email=t@local", "-c", "user.name=t", "commit", "-q", "--no-verify", "-m", msg], cwd)
-
-
-def sandbox(files):
-    """A hermetic git repo seeded with ``files`` (rel-path -> content), committed as the baseline."""
-    directory = tempfile.TemporaryDirectory(prefix="gtest-")
-    _DIRS.append(directory)
-    d = Path(directory.name)
-    for rel, content in files.items():
-        p = d / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    _sh(["git", "init", "-q", "-b", "main"], d)
-    _sh(["git", "config", "core.autocrlf", "false"], d)
-    _sh(["git", "config", "core.hooksPath", str(d / ".git" / "hooks")], d)
-    _sh(["git", "add", "-A"], d)
-    _sh(["git", "-c", "user.email=t@local", "-c", "user.name=t", "commit", "-q", "--no-verify", "-m", "seed"], d)
-    return d
 
 
 # a retained parent (shared set) + two leaves; disjoint and total, so coverage is clean
@@ -89,15 +46,13 @@ def check(g, name):
 
 # --- invocation health: a crashed or timed-out run never passes -------------------------------------
 
-@case
-def invocation_fails_on_nonzero_exit():
+def test_invocation_fails_on_nonzero_exit(sandbox):
     g = graders.grade({"id": "t", "agent": "main"}, ORG, [], sandbox(FILES), "", exit_code=1, timed_out=False)
     assert check(g, "invocation")["result"] == "fail"
     assert g["passed"] is False
 
 
-@case
-def invocation_fails_on_timeout():
+def test_invocation_fails_on_timeout(sandbox):
     g = graders.grade({"id": "t", "agent": "main"}, ORG, [], sandbox(FILES), "", exit_code=0, timed_out=True)
     assert check(g, "invocation")["result"] == "fail"
     assert g["passed"] is False
@@ -105,24 +60,21 @@ def invocation_fails_on_timeout():
 
 # --- routing: acted owner vs the manifest's human label ---------------------------------------------
 
-@case
-def routing_passes_when_owner_matches():
+def test_routing_passes_when_owner_matches(sandbox):
     m = {"id": "t", "agent": "main", "expected_owner": ["a"]}
     g = graders.grade(m, ORG, ["region_a/new.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "routing")["result"] == "pass"
     assert g["passed"] is True
 
 
-@case
-def routing_fails_on_foreign_owner():
+def test_routing_fails_on_foreign_owner(sandbox):
     m = {"id": "t", "agent": "main", "expected_owner": ["a"]}
     g = graders.grade(m, ORG, ["misc/thing.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "routing")["result"] == "fail"  # misc/* is owned by b, not a
     assert g["passed"] is False
 
 
-@case
-def routing_fails_on_unowned_change():
+def test_routing_fails_on_unowned_change(sandbox):
     org2 = {"version": 1, "root": "root", "nodes": [
         {"id": "root", "charter": {"domain": ["shared/**"]}, "parent": None, "children": ["a", "c"], "mode": "Parent"},
         {"id": "a", "charter": {"domain": ["region_a/**"]}, "parent": "root", "children": [], "mode": "Leaf"},
@@ -137,16 +89,14 @@ def routing_fails_on_unowned_change():
 
 # --- paths: changes stay inside allowed regions and out of forbidden ones ---------------------------
 
-@case
-def paths_fail_inside_forbidden():
+def test_paths_fail_inside_forbidden(sandbox):
     m = {"id": "t", "agent": "main", "allowed_paths": ["**"], "forbidden_paths": ["shared/**"]}
     g = graders.grade(m, ORG, ["shared/leak.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "paths")["result"] == "fail"
     assert g["passed"] is False
 
 
-@case
-def paths_fail_outside_allowed():
+def test_paths_fail_outside_allowed(sandbox):
     m = {"id": "t", "agent": "main", "allowed_paths": ["region_a/**"]}
     g = graders.grade(m, ORG, ["misc/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "paths")["result"] == "fail"
@@ -155,8 +105,7 @@ def paths_fail_outside_allowed():
 
 # --- build: the deterministic outcome assertion -----------------------------------------------------
 
-@case
-def build_fails_when_assertion_fails():
+def test_build_fails_when_assertion_fails(sandbox):
     m = {"id": "t", "agent": "main",
          "build_cmd": "python -c \"import pathlib; assert pathlib.Path('made.txt').exists()\""}
     g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)
@@ -164,8 +113,7 @@ def build_fails_when_assertion_fails():
     assert g["passed"] is False
 
 
-@case
-def build_passes_when_outcome_present():
+def test_build_passes_when_outcome_present(sandbox):
     m = {"id": "t", "agent": "main",
          "build_cmd": "python -c \"import pathlib; assert pathlib.Path('made.txt').read_text().strip() == 'ok'\""}
     g = graders.grade(m, ORG, [], sandbox({**FILES, "made.txt": "ok\n"}), "ok", exit_code=0, timed_out=False)
@@ -175,8 +123,7 @@ def build_passes_when_outcome_present():
 
 # --- the overall rule: passed == every applicable check green ---------------------------------------
 
-@case
-def all_green_passes():
+def test_all_green_passes(sandbox):
     m = {"id": "t", "agent": "a", "expected_owner": ["a"], "allowed_paths": ["region_a/**"],
          "forbidden_paths": ["shared/**"]}
     g = graders.grade(m, ORG, ["region_a/new.txt"], sandbox(FILES), "done", exit_code=0, timed_out=False)
@@ -186,16 +133,14 @@ def all_green_passes():
 
 # --- containment applies to a leaf; a parent routing across its subtree is validated by routing/paths -
 
-@case
-def containment_fails_for_leaf_touching_sibling():
+def test_containment_fails_for_leaf_touching_sibling(sandbox):
     m = {"id": "t", "agent": "a"}  # a is a leaf owning region_a/**
     g = graders.grade(m, ORG, ["misc/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "containment")["result"] == "fail"  # misc/* is owned by b, not a
     assert g["passed"] is False
 
 
-@case
-def containment_skipped_for_parent():
+def test_containment_skipped_for_parent(sandbox):
     m = {"id": "t", "agent": "root"}  # root is a Parent; it may route anywhere in its subtree
     g = graders.grade(m, ORG, ["region_a/x.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "containment") is None  # no single-owner containment check for a parent
@@ -204,8 +149,7 @@ def containment_skipped_for_parent():
 
 # --- H3: attribution uses the immutable baseline org, not one the agent rewrote --------------------
 
-@case
-def grades_against_baseline_not_rewritten_org():
+def test_grades_against_baseline_not_rewritten_org(sandbox):
     # the agent touched a foreign path AND rewrote org.json to "own" everything; attribution must
     # still use the baseline ORG (a owns region_a only), so routing and containment fail.
     rewritten = {"version": 1, "root": "a",
@@ -222,8 +166,7 @@ def grades_against_baseline_not_rewritten_org():
 
 # --- H9: a missing/unparseable final org fails coverage, never crashes -----------------------------
 
-@case
-def broken_final_org_fails_coverage():
+def test_broken_final_org_fails_coverage(sandbox):
     m = {"id": "t", "agent": "a"}
     g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False, final_org=None)
     assert check(g, "coverage")["result"] == "fail"
@@ -232,8 +175,7 @@ def broken_final_org_fails_coverage():
 
 # --- H1: capture() sees committed + untracked + renames (not just working-tree status) -------------
 
-@case
-def capture_sees_committed_change():
+def test_capture_sees_committed_change(sandbox):
     d = sandbox({"a.txt": "1"})
     base = _sha(d)
     baseline_files = run.snapshot(d)
@@ -244,8 +186,7 @@ def capture_sees_committed_change():
     assert cap["new_commits"] == 1, cap
 
 
-@case
-def capture_sees_untracked_and_rename():
+def test_capture_sees_untracked_and_rename(sandbox):
     d = sandbox({"orig.txt": "hello world payload"})
     base = _sha(d)
     baseline_files = run.snapshot(d)
@@ -259,8 +200,7 @@ def capture_sees_untracked_and_rename():
 
 # --- H7: an overlapped (multi-owner) changed path fails routing, never passes silently -------------
 
-@case
-def routing_fails_on_overlap():
+def test_routing_fails_on_overlap(sandbox):
     org2 = {"version": 1, "root": "root", "nodes": [
         {"id": "root", "charter": {"domain": ["shared/**"]}, "parent": None, "children": ["a", "b"], "mode": "Parent"},
         {"id": "a", "charter": {"domain": ["dup/**"]}, "parent": "root", "children": [], "mode": "Leaf"},
@@ -273,23 +213,20 @@ def routing_fails_on_overlap():
 
 # --- H2: fail closed on a no-op via effect (required_paths / required_touched_owners / no_changes) --
 
-@case
-def effect_fails_on_noop_when_change_required():
+def test_effect_fails_on_noop_when_change_required(sandbox):
     m = {"id": "t", "agent": "a", "required_paths": ["region_a/**"]}
     g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)  # nothing changed
     assert check(g, "effect")["result"] == "fail"
     assert g["passed"] is False
 
 
-@case
-def effect_passes_when_required_path_changed():
+def test_effect_passes_when_required_path_changed(sandbox):
     m = {"id": "t", "agent": "a", "required_paths": ["region_a/**"]}
     g = graders.grade(m, ORG, ["region_a/new.txt"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "effect")["result"] == "pass"
 
 
-@case
-def effect_expected_no_changes_reject_case():
+def test_effect_expected_no_changes_reject_case(sandbox):
     m = {"id": "t", "agent": "a", "expected_no_changes": True}
     ok = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(ok, "effect")["result"] == "pass"           # a reject/refuse case that changed nothing
@@ -297,8 +234,7 @@ def effect_expected_no_changes_reject_case():
     assert check(bad, "effect")["result"] == "fail"          # but it did change something
 
 
-@case
-def effect_required_owner_missing_fails():
+def test_effect_required_owner_missing_fails(sandbox):
     m = {"id": "t", "agent": "root", "required_touched_owners": ["a"]}
     g = graders.grade(m, ORG, ["shared/x"], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "effect")["result"] == "fail"            # touched root, not the required owner a
@@ -306,8 +242,7 @@ def effect_required_owner_missing_fails():
 
 # --- H6: per-check rate denominator counts only runs where the check is present --------------------
 
-@case
-def summarize_denominator_excludes_absent_checks():
+def test_summarize_denominator_excludes_absent_checks():
     def mk(checks, passed):
         return {"grade": {"passed": passed, "checks": checks},
                 "usage": {"totalPremiumRequestCost": 0.1}, "duration_s": 10,
@@ -324,8 +259,7 @@ def summarize_denominator_excludes_absent_checks():
 
 # --- H5: a build_cmd that overruns build_timeout fails (never stalls the run) ----------------------
 
-@case
-def build_times_out_and_fails():
+def test_build_times_out_and_fails(sandbox):
     m = {"id": "t", "agent": "a", "build_cmd": "python -c \"import time; time.sleep(5)\"", "build_timeout": 1}
     g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False)
     assert check(g, "build")["result"] == "fail"
@@ -339,39 +273,29 @@ _GOOD_ORG = {"version": 3, "root": "main", "nodes": [
      "charter": {"domain": ["**"], "concerns": [], "excludes": []}}]}
 
 
-def _fixture(org, extra_seed=None):
-    directory = tempfile.TemporaryDirectory(prefix="fx-")
-    _DIRS.append(directory)
-    d = Path(directory.name)
-    seed = d / "seed"
-    seed.mkdir()
-    (seed / "org.json").write_text(json.dumps(org), encoding="utf-8")
-    for rel, content in (extra_seed or {}).items():
-        p = seed / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    return d
+@pytest.fixture
+def _fixture(file_tree):
+    return lambda org, extra_seed=None: file_tree({
+        "seed/org.json": json.dumps(org),
+        **{f"seed/{rel}": content for rel, content in (extra_seed or {}).items()},
+    })
 
 
-@case
-def preflight_accepts_valid_fixture():
+def test_preflight_accepts_valid_fixture(_fixture):
     assert run.preflight(_fixture(_GOOD_ORG), {"id": "t", "agent": "main"}) == []
 
 
-@case
-def preflight_rejects_bad_schema_version():
+def test_preflight_rejects_bad_schema_version(_fixture):
     probs = run.preflight(_fixture({**_GOOD_ORG, "version": 1}), {"id": "t", "agent": "main"})
     assert any("schema" in p for p in probs), probs
 
 
-@case
-def preflight_rejects_missing_agent_def():
+def test_preflight_rejects_missing_agent_def(_fixture):
     probs = run.preflight(_fixture(_GOOD_ORG), {"id": "t", "agent": "ghost"})
     assert any("ghost" in p for p in probs), probs
 
 
-@case
-def preflight_rejects_baseline_coverage_gap():
+def test_preflight_rejects_baseline_coverage_gap(_fixture):
     org = {"version": 3, "root": "main", "nodes": [
         {"id": "main", "parent": None, "children": [], "mode": "Leaf",
          "charter": {"domain": ["sub/**"], "concerns": [], "excludes": []}}]}  # owns sub/** only
@@ -381,8 +305,7 @@ def preflight_rejects_baseline_coverage_gap():
 
 # --- host-mode invocation omits --agent so the Host performs the hardcoded entry to main -----------
 
-@case
-def host_mode_omits_agent_flag():
+def test_host_mode_omits_agent_flag():
     usage = Path(tempfile.gettempdir()) / "u.json"
     host_cmd = run.build_invoke_cmd({"agent": "host", "intent": "x"}, Path("/sb"), None, None, usage)
     assert "--agent" not in host_cmd, host_cmd
@@ -390,12 +313,7 @@ def host_mode_omits_agent_flag():
     assert node_cmd[node_cmd.index("--agent") + 1] == "catalog", node_cmd
 
 
-@pytest.mark.parametrize("scenario", CASES, ids=lambda scenario: scenario.__name__)
-def test_grader_scenarios(scenario):
-    scenario()
-
-
-def test_partial_unmanaged_paths_do_not_fail_routing():
+def test_partial_unmanaged_paths_do_not_fail_routing(sandbox):
     partial = {**ORG, "scope": ["region_a/**"]}
     directory = sandbox(FILES)
     result = graders.grade(
@@ -405,13 +323,13 @@ def test_partial_unmanaged_paths_do_not_fail_routing():
     assert check(result, "containment")["result"] == "pass"
 
 
-def test_scope_cannot_be_rewritten_to_hide_failed_coverage():
+def test_scope_cannot_be_rewritten_to_hide_failed_coverage(sandbox):
     altered = {**ORG, "scope": ["nonexistent/**"]}
     result = graders.grade({"agent": "a"}, ORG, ["org.json"], sandbox(FILES), final_org=altered)
     assert check(result, "configuration")["result"] == "fail"
 
 
-def test_capture_does_not_trust_agent_modified_ignore_rules():
+def test_capture_does_not_trust_agent_modified_ignore_rules(sandbox):
     directory = sandbox({"required.txt": "before"})
     baseline = run.snapshot(directory)
     commit = _sha(directory)
@@ -423,7 +341,7 @@ def test_capture_does_not_trust_agent_modified_ignore_rules():
     assert "foreign/extra.txt" in result["changed_paths"]
 
 
-def test_foreign_log_requires_correct_actor_run_and_completed_phase():
+def test_foreign_log_requires_correct_actor_run_and_completed_phase(sandbox):
     directory = sandbox(FILES)
     manifest = {"agent": "a", "expected_foreign": [{"path": "misc/new.txt", "owner": "b", "acting": "a"}]}
     log = directory / ".git" / "agent-org" / "foreign" / "this-run" / "child.jsonl"
@@ -448,13 +366,13 @@ def test_foreign_log_requires_correct_actor_run_and_completed_phase():
     assert check(result, "foreign_log")["result"] == "fail"
 
 
-def test_expected_warning_does_not_disable_other_containment_checks():
+def test_expected_warning_does_not_disable_other_containment_checks(sandbox):
     manifest = {"agent": "a", "expected_foreign": [{"path": "misc/allowed.txt", "owner": "b", "acting": "a"}]}
     result = graders.grade(manifest, ORG, ["misc/unexpected.txt"], sandbox(FILES))
     assert check(result, "containment")["result"] == "fail"
 
 
-def test_denial_fixture_requires_a_logged_attempt():
+def test_denial_fixture_requires_a_logged_attempt(sandbox):
     directory = sandbox(FILES)
     manifest = {
         "agent": "root", "expected_no_changes": True,

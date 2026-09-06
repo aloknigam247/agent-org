@@ -4,11 +4,8 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,39 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tool
 import owner_validator as ov  # noqa: E402
 
 TOOL = Path(__file__).resolve().parent.parent / "plugin" / "tools" / "owner_validator.py"
-CASES = []
-_DIRS = []
 
 
-@pytest.fixture(autouse=True)
-def cleanup_sandboxes():
-    yield
-    for directory in _DIRS:
-        directory.cleanup()
-    _DIRS.clear()
-
-
-def case(fn):
-    CASES.append(fn)
-    return fn
-
-
-def git_repo(files, org_dict):
-    """A hermetic git repo with `files` (rel->content) plus org.json, committed — for git_tracked /
-    domain_size / CLI tests."""
-    directory = tempfile.TemporaryDirectory(prefix="ovt-")
-    _DIRS.append(directory)
-    d = Path(directory.name)
-    (d / "org.json").write_text(json.dumps(org_dict), encoding="utf-8")
-    for rel, content in files.items():
-        p = d / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    for args in (["init", "-q", "-b", "main"], ["config", "core.autocrlf", "false"],
-                 ["config", "core.hooksPath", str(d / ".git" / "hooks")], ["add", "-A"],
-                 ["-c", "user.email=t@local", "-c", "user.name=t", "commit", "-q", "--no-verify", "-m", "seed"]):
-        subprocess.run(["git", *args], cwd=d, capture_output=True, text=True)
-    return d
+@pytest.fixture
+def git_repo(sandbox):
+    return lambda files, org_dict: sandbox({"org.json": json.dumps(org_dict), **files})
 
 
 def node(nid, domain=None, excludes=None, parent=None, children=None, mode=None):
@@ -74,15 +43,13 @@ def owners(o, path):
 
 # --- glob dialect: gitignore semantics via pathspec (design §2.7) ------------------------------------
 
-@case
-def bare_globstar_matches_root_nested_and_dotfiles():
+def test_bare_globstar_matches_root_nested_and_dotfiles():
     o = org("all", [node("all", ["**"], mode="Leaf")])
     for p in ["README", ".gitignore", "content/post.md", "a/b/c/deep.txt", ".config/x"]:
         assert owners(o, p) == ["all"], (p, owners(o, p))
 
 
-@case
-def dir_globstar_scopes_to_subtree_only():
+def test_dir_globstar_scopes_to_subtree_only():
     o = org("r", [node("blog", ["content/**"], mode="Leaf"),
                   node("rest", ["**"], excludes=["content/**"], mode="Leaf")])
     assert owners(o, "content/2021/post.md") == ["blog"]
@@ -92,8 +59,7 @@ def dir_globstar_scopes_to_subtree_only():
     assert owners(o, "content") == ["rest"]
 
 
-@case
-def globstar_name_matches_in_any_directory():
+def test_globstar_name_matches_in_any_directory():
     o = org("r", [node("locks", ["**/*.lock"], mode="Leaf"),
                   node("app", ["**"], excludes=["**/*.lock"], mode="Leaf")])
     assert owners(o, "deps.lock") == ["locks"]
@@ -101,16 +67,14 @@ def globstar_name_matches_in_any_directory():
     assert owners(o, "app/main.py") == ["app"]
 
 
-@case
-def matching_is_case_sensitive():
+def test_matching_is_case_sensitive():
     o = org("r", [node("cap", ["Src/**"], mode="Leaf"),
                   node("rest", ["**"], excludes=["Src/**"], mode="Leaf")])
     assert owners(o, "src/x.py") == ["rest"]   # lowercase is not matched by Src/**
     assert owners(o, "Src/x.py") == ["cap"]
 
 
-@case
-def dotfiles_are_matched_like_any_path():
+def test_dotfiles_are_matched_like_any_path():
     o = org("r", [node("cfg", ["config/**"], mode="Leaf"),
                   node("rest", ["**"], excludes=["config/**"], mode="Leaf")])
     assert owners(o, "config/.secret") == ["cfg"]
@@ -119,23 +83,20 @@ def dotfiles_are_matched_like_any_path():
 
 # --- coverage: exactly-one-owner (design §2.2) -------------------------------------------------------
 
-@case
-def coverage_gap_is_unowned():
+def test_coverage_gap_is_unowned():
     o = org("r", [node("only", ["kitchen/**"], mode="Leaf")])
     v = ov.check_coverage(o, ["kitchen/stove.py", "garden/rose.py"])
     assert [(x["path"], x["rule"]) for x in v] == [("garden/rose.py", "uncovered")], v
 
 
-@case
-def coverage_overlap_is_flagged():
+def test_coverage_overlap_is_flagged():
     o = org("r", [node("a", ["shared/**"], mode="Leaf"),
                   node("b", ["shared/**"], mode="Leaf")])
     v = ov.check_coverage(o, ["shared/x"])
     assert len(v) == 1 and v[0]["rule"] == "overlap", v
 
 
-@case
-def coverage_partition_is_clean():
+def test_coverage_partition_is_clean():
     o = org("r", [node("a", ["left/**"], mode="Leaf"),
                   node("b", ["**"], excludes=["left/**"], mode="Leaf")])
     assert ov.check_coverage(o, ["left/x", "right/y", "top"]) == []
@@ -143,16 +104,14 @@ def coverage_partition_is_clean():
 
 # --- tree invariants (design §5) ---------------------------------------------------------------------
 
-@case
-def tree_valid_parent_with_two_leaves():
+def test_tree_valid_parent_with_two_leaves():
     o = org("root", [node("root", ["shared/**"], parent=None, children=["c1", "c2"], mode="Parent"),
                      node("c1", ["one/**"], parent="root", mode="Leaf"),
                      node("c2", ["two/**"], parent="root", mode="Leaf")])
     assert ov.check_tree(o) == []
 
 
-@case
-def tree_rejects_parent_globstar_domain():
+def test_tree_rejects_parent_globstar_domain():
     # a Parent's domain must be an explicit shared set, never ** (design §2.2)
     o = org("root", [node("root", ["**"], parent=None, children=["c1", "c2"], mode="Parent"),
                      node("c1", ["one/**"], parent="root", mode="Leaf"),
@@ -161,32 +120,28 @@ def tree_rejects_parent_globstar_domain():
     assert any("Parent domain is **" in e for e in ev), ev
 
 
-@case
-def tree_rejects_two_roots():
+def test_tree_rejects_two_roots():
     o = org("a", [node("a", ["x/**"], parent=None, mode="Leaf"),
                   node("b", ["y/**"], parent=None, mode="Leaf")])
     ev = [x["evidence"] for x in ov.check_tree(o)]
     assert any("expected exactly 1 root" in e for e in ev), ev
 
 
-@case
-def tree_rejects_leaf_with_children():
+def test_tree_rejects_leaf_with_children():
     o = org("root", [node("root", ["**"], parent=None, children=["k"], mode="Leaf"),
                      node("k", ["k/**"], parent="root", mode="Leaf")])
     ev = [x["evidence"] for x in ov.check_tree(o)]
     assert any("Leaf has children" in e for e in ev), ev
 
 
-@case
-def tree_rejects_parent_with_one_child():
+def test_tree_rejects_parent_with_one_child():
     o = org("root", [node("root", ["**"], parent=None, children=["only"], mode="Parent"),
                      node("only", ["only/**"], parent="root", mode="Leaf")])
     ev = [x["evidence"] for x in ov.check_tree(o)]
     assert any("fewer than 2 children" in e for e in ev), ev
 
 
-@case
-def tree_rejects_backreference_mismatch():
+def test_tree_rejects_backreference_mismatch():
     o = org("root", [node("root", ["**"], parent=None, children=["c1", "c2"], mode="Parent"),
                      node("c1", ["a/**"], parent="root", mode="Leaf"),
                      node("c2", ["b/**"], parent="c1", mode="Leaf")])
@@ -194,8 +149,7 @@ def tree_rejects_backreference_mismatch():
     assert any("back-reference mismatch" in e for e in ev), ev
 
 
-@case
-def tree_rejects_duplicate_id():
+def test_tree_rejects_duplicate_id():
     o = org("root", [node("root", ["**"], parent=None, children=["c1", "c2"], mode="Parent"),
                      node("c1", ["a/**"], parent="root", mode="Leaf"),
                      node("c1", ["b/**"], parent="root", mode="Leaf")])
@@ -203,8 +157,7 @@ def tree_rejects_duplicate_id():
     assert any("duplicate id" in e for e in ev), ev
 
 
-@case
-def tree_rejects_cycle():
+def test_tree_rejects_cycle():
     o = org("x", [node("x", ["x/**"], parent="y", mode="Leaf"),
                   node("y", ["y/**"], parent="x", mode="Leaf")])
     ev = [x["evidence"] for x in ov.check_tree(o)]
@@ -213,16 +166,14 @@ def tree_rejects_cycle():
 
 # --- containment: the integration gate (design §2.5, §2.7) ------------------------------------------
 
-@case
-def containment_accepts_acting_owned_paths():
+def test_containment_accepts_acting_owned_paths():
     o = org("r", [node("a", ["a/**"], mode="Leaf"),
                   node("b", ["**"], excludes=["a/**"], mode="Leaf")])
     r = ov.check_containment(o, "a", ["a/x.py", "a/sub/y.py"])
     assert r["status"] == "ok", r
 
 
-@case
-def containment_rejects_foreign_path():
+def test_containment_rejects_foreign_path():
     o = org("r", [node("a", ["a/**"], mode="Leaf"),
                   node("b", ["**"], excludes=["a/**"], mode="Leaf")])
     r = ov.check_containment(o, "a", ["b/other.py"])
@@ -231,8 +182,7 @@ def containment_rejects_foreign_path():
     assert r["violations"][0]["owner"] == "b"
 
 
-@case
-def containment_rejects_unowned_change():
+def test_containment_rejects_unowned_change():
     o = org("r", [node("a", ["a/**"], mode="Leaf")])
     r = ov.check_containment(o, "a", ["z/new.py"])
     assert r["violations"][0]["rule"] == "uncovered", r
@@ -240,8 +190,7 @@ def containment_rejects_unowned_change():
 
 # --- path normalization ------------------------------------------------------------------------------
 
-@case
-def normalize_backslashes_and_dot_prefix():
+def test_normalize_backslashes_and_dot_prefix():
     assert ov.normalize("a\\b\\c") == "a/b/c"
     assert ov.normalize("./x/y") == "x/y"
     assert ov.normalize("././z") == "z"
@@ -249,8 +198,7 @@ def normalize_backslashes_and_dot_prefix():
 
 # --- glob boundary cases (gitignore dialect via pathspec) -------------------------------------------
 
-@case
-def glob_slashless_matches_any_depth_but_anchored_does_not():
+def test_glob_slashless_matches_any_depth_but_anchored_does_not():
     o = org("r", [node("a", ["Makefile"], mode="Leaf"),
                   node("b", ["**"], excludes=["Makefile"], mode="Leaf")])
     assert owners(o, "Makefile") == ["a"]
@@ -260,15 +208,13 @@ def glob_slashless_matches_any_depth_but_anchored_does_not():
     assert owners(anchored, "sub/Makefile") == ["b"]  # a leading slash anchors to the root
 
 
-@case
-def glob_trailing_slash_matches_directory_contents():
+def test_glob_trailing_slash_matches_directory_contents():
     o = org("r", [node("a", ["build/"], mode="Leaf"),
                   node("b", ["**"], excludes=["build/"], mode="Leaf")])
     assert owners(o, "build/out.o") == ["a"]
 
 
-@case
-def glob_character_class():
+def test_glob_character_class():
     o = org("r", [node("a", ["**/*.[ch]"], mode="Leaf"),
                   node("b", ["**"], excludes=["**/*.[ch]"], mode="Leaf")])
     assert owners(o, "src/main.c") == ["a"]
@@ -276,15 +222,13 @@ def glob_character_class():
     assert owners(o, "src/main.py") == ["b"]
 
 
-@case
-def exclude_not_recovered_is_unowned():
+def test_exclude_not_recovered_is_unowned():
     o = org("r", [node("a", ["src/**"], excludes=["src/gen/**"], mode="Leaf")])  # nobody re-covers src/gen
     v = ov.check_coverage(o, ["src/x", "src/gen/y"])
     assert [(x["path"], x["rule"]) for x in v] == [("src/gen/y", "uncovered")], v
 
 
-@case
-def tree_rejects_parent_missing_child_backref():
+def test_tree_rejects_parent_missing_child_backref():
     # c2 claims root as parent, but root.children omits it (a reverse back-reference gap)
     o = org("root", [node("root", ["shared/**"], parent=None, children=["c1", "c2"], mode="Parent"),
                      node("c1", ["a/**"], parent="root", mode="Leaf"),
@@ -302,16 +246,14 @@ _AB = {"version": 3, "root": "b", "nodes": [
     {"id": "c", "charter": {"domain": ["c/**"]}, "parent": "b", "children": [], "mode": "Leaf"}]}
 
 
-@case
-def domain_size_counts_only_owned_bytes():
+def test_domain_size_counts_only_owned_bytes(git_repo):
     repo = git_repo({"a/x.txt": "12345", "c/y.txt": "123"}, _AB)  # a owns 5 bytes, c owns 3
     m = ov.domain_size(_AB, "a", repo)
     assert m["files"] == 1 and m["bytes"] == 5, m
     assert m["est_tokens"] == 1, m  # 5 // 4
 
 
-@case
-def cli_owner_exit_codes():
+def test_cli_owner_exit_codes(git_repo):
     org_one = {"version": 3, "root": "main", "nodes": [
         {"id": "main", "charter": {"domain": ["a/**"]}, "parent": None, "children": [], "mode": "Leaf"}]}
     repo = git_repo({"a/x.txt": "1"}, org_one)
@@ -336,15 +278,13 @@ def _root_split():
     return old, new
 
 
-@case
-def split_valid_root_split():
+def test_split_valid_root_split():
     old, new = _root_split()
     r = ov.check_split(old, new, ["a/x", "b/y", "root.txt"])
     assert r["status"] == "ok", r
 
 
-@case
-def split_valid_second_generation():
+def test_split_valid_second_generation():
     old = {"version": 3, "root": "root", "nodes": [
         node("root", ["shared/**"], parent=None, children=["a", "b"], mode="Parent"),
         node("a", ["a/**"], parent="root", mode="Leaf"),
@@ -359,24 +299,21 @@ def split_valid_second_generation():
     assert r["status"] == "ok", r
 
 
-@case
-def split_rejects_wrong_version():
+def test_split_rejects_wrong_version():
     old, new = _root_split()
     new["version"] = 5  # must be old + 1
     r = ov.check_split(old, new)
     assert any("version must bump" in v["evidence"] for v in r["violations"]), r
 
 
-@case
-def split_rejects_root_change():
+def test_split_rejects_root_change():
     old, new = _root_split()
     new["root"] = "a"
     r = ov.check_split(old, new)
     assert any("root changed" in v["evidence"] for v in r["violations"]), r
 
 
-@case
-def split_rejects_removed_node():
+def test_split_rejects_removed_node():
     old = {"version": 3, "root": "root", "nodes": [
         node("root", ["shared/**"], parent=None, children=["a", "b"], mode="Parent"),
         node("a", ["a/**"], parent="root", mode="Leaf"),
@@ -390,16 +327,14 @@ def split_rejects_removed_node():
     assert any("removed" in v["evidence"] for v in r["violations"]), r
 
 
-@case
-def split_rejects_non_leaf_child():
+def test_split_rejects_non_leaf_child():
     old, new = _root_split()
     new["nodes"][1]["mode"] = "Parent"  # child 'a' must be a Leaf
     r = ov.check_split(old, new)
     assert any("must be a Leaf" in v["evidence"] for v in r["violations"]), r
 
 
-@case
-def split_rejects_path_leaving_subtree():
+def test_split_rejects_path_leaving_subtree():
     old, new = _root_split()  # new main domain is only root.txt; a/**, b/** cover the rest
     r = ov.check_split(old, new, ["a/x", "b/y", "orphan.txt"])  # orphan matches nothing new
     assert any("left the split subtree" in v["evidence"] for v in r["violations"]), r
@@ -419,51 +354,44 @@ def _payload(tool, path, cwd="/repo", sid=None):
     return p
 
 
-@case
-def hook_allows_owned_write_no_foreign():
+def test_hook_allows_owned_write_no_foreign():
     d, f = ov.hook_decision(_payload("create", "/repo/a/new.py"), _HOOK_ORG, acting="a")
     assert d["permissionDecision"] == "allow" and f is None, (d, f)
 
 
-@case
-def hook_warn_allows_but_flags_foreign():
+def test_hook_warn_allows_but_flags_foreign():
     d, f = ov.hook_decision(_payload("edit", "/repo/b/x.py"), _HOOK_ORG, mode="warn", acting="a")
     assert d["permissionDecision"] == "allow", d          # warn: write is allowed (content preserved)
     assert f == {"path": "b/x.py", "owner": "b", "acting": "a", "disposition": "warn"}, f
 
 
-@case
-def hook_enforce_denies_foreign():
+def test_hook_enforce_denies_foreign():
     d, f = ov.hook_decision(_payload("edit", "/repo/b/x.py"), _HOOK_ORG, mode="enforce", acting="a")
     assert d["permissionDecision"] == "deny" and "owned by 'b'" in d["permissionDecisionReason"], d
     assert f is not None
 
 
-@case
-def hook_flags_unowned():
+def test_hook_flags_unowned():
     d, f = ov.hook_decision(_payload("create", "/repo/nowhere/x"), _HOOK_ORG, mode="warn", acting="a")
     assert d["permissionDecision"] == "allow" and f["owner"] is None, (d, f)
     d2, _ = ov.hook_decision(_payload("create", "/repo/nowhere/x"), _HOOK_ORG, mode="enforce", acting="a")
     assert d2["permissionDecision"] == "deny" and "UNOWNED" in d2["permissionDecisionReason"], d2
 
 
-@case
-def hook_allows_non_write_tool():
+def test_hook_allows_non_write_tool():
     d, f = ov.hook_decision({"toolName": "glob", "toolArgs": {"pattern": "**/*"}, "cwd": "/repo"},
                             _HOOK_ORG, acting="a")
     assert d["permissionDecision"] == "allow" and f is None, (d, f)
 
 
-@case
-def hook_never_infers_actor_from_shared_worktree_name():
+def test_hook_never_infers_actor_from_shared_worktree_name():
     payload = _payload("create", r"D:\repo\.worktrees\a\b\new.txt", r"D:\repo\.worktrees\a")
     decision, foreign = ov.hook_decision(payload, _HOOK_ORG, acting="root")
     assert decision["permissionDecision"] == "deny"
     assert foreign["acting"] == "root" and foreign["owner"] == "b"
 
 
-@case
-def hook_without_acting_reports_missing_identity():
+def test_hook_without_acting_reports_missing_identity():
     owned, f1 = ov.hook_decision(_payload("create", "/repo/b/x.py"), _HOOK_ORG, acting=None)
     assert owned["permissionDecision"] == "deny" and "identity" in owned["permissionDecisionReason"]
     unowned, f2 = ov.hook_decision(_payload("create", "/repo/z/x"), _HOOK_ORG, acting=None)
@@ -472,16 +400,14 @@ def hook_without_acting_reports_missing_identity():
 
 # --- in-place identity: record_acting (userPromptSubmitted) + preToolUse resolves + logs foreign -----
 
-@case
-def record_acting_and_resolve_roundtrip():
+def test_record_acting_and_resolve_roundtrip(git_repo):
     repo = git_repo({"a/keep.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     ov.record_acting({"sessionId": "S1", "cwd": str(repo), "prompt": "AgentOrgActingNode: a\nDo work"})
     assert ov._acting_from_map({"sessionId": "S1", "cwd": str(repo)}) == "a"
     assert ov._acting_from_map({"sessionId": "unknown", "cwd": str(repo)}) is None
 
 
-@case
-def hook_cli_warn_allows_and_logs_foreign():
+def test_hook_cli_warn_allows_and_logs_foreign(git_repo):
     repo = git_repo({"a/keep.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     # record 'a' as the acting node for session S2, then S2 writes into b/ (foreign)
     ov.record_acting({"sessionId": "S2", "cwd": str(repo), "prompt": "AgentOrgActingNode: a"})
@@ -496,8 +422,7 @@ def hook_cli_warn_allows_and_logs_foreign():
     assert entry["sessionId"] == "S2", entry
 
 
-@case
-def hook_cli_enforce_denies_foreign():
+def test_hook_cli_enforce_denies_foreign(git_repo):
     repo = git_repo({"a/keep.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     ov.record_acting({"sessionId": "S3", "cwd": str(repo), "prompt": "AgentOrgActingNode: a"})
     pl = json.dumps(_payload("edit", str(repo / "b" / "x.py"), str(repo), sid="S3"))
@@ -506,12 +431,9 @@ def hook_cli_enforce_denies_foreign():
     assert json.loads(p.stdout)["permissionDecision"] == "deny", p.stdout
 
 
-@case
-def hook_cli_allows_when_no_org():
+def test_hook_cli_allows_when_no_org(tmp_path):
     # a non-agent-org repo (no org.json) must never be disturbed by the plugin hook
-    directory = tempfile.TemporaryDirectory(prefix="noorg-")
-    _DIRS.append(directory)
-    d = Path(directory.name)
+    d = tmp_path
     pl = json.dumps(_payload("create", str(d / "anything.txt"), str(d)))
     p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(d / "org.json")],
                        input=pl, capture_output=True, text=True)
@@ -520,8 +442,7 @@ def hook_cli_allows_when_no_org():
 
 # --- usage log + split-advice (parent's over-burden signal) -----------------------------------------
 
-@case
-def usage_record_and_split_advice_over_by_usage():
+def test_usage_record_and_split_advice_over_by_usage(git_repo):
     repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     # 'a' owns a tiny domain, but a session burned a lot of tokens -> over threshold by usage
     ov.usage_record(str(repo), "a", 100)
@@ -531,23 +452,16 @@ def usage_record_and_split_advice_over_by_usage():
     assert adv["recommend_split"] is True and any("peak session" in r for r in adv["reasons"]), adv
 
 
-@case
-def split_advice_not_over_when_small():
+def test_split_advice_not_over_when_small(git_repo):
     repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     ov.usage_record(str(repo), "a", 5000)
     adv = ov.split_advice(_HOOK_ORG, "a", str(repo), window=200000, threshold=0.60)
     assert adv["recommend_split"] is False, adv
 
 
-@case
-def usage_record_cli_appends_log():
+def test_usage_record_cli_appends_log(git_repo):
     repo = git_repo({"a/x.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     subprocess.run([sys.executable, str(TOOL), "--usage-record", "a", "--tokens", "150000", "--root", str(repo)],
                    capture_output=True, text=True)
     log = repo / ".git" / "agent-org" / "usage" / "a.jsonl"
     assert log.exists() and json.loads(log.read_text(encoding="utf-8").splitlines()[0])["tokens"] == 150000
-
-
-@pytest.mark.parametrize("scenario", CASES, ids=lambda scenario: scenario.__name__)
-def test_oracle_scenarios(scenario):
-    scenario()
