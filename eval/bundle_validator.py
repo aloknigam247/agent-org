@@ -3,9 +3,9 @@
 Given a repo root and its ``org.json``, verify the static bundle invariants that need no agent judgement:
 
 - **SO2 Bundle presence** — every live node has an agent-def ``.github/agents/<id>.md``.
-- **SO3 Single-writer** — an artifact's declared ``owner`` matches the node whose namespace it sits in.
-- **SO6 No orphan** — every file under ``wiki/``, ``skills/``, ``tools/`` sits in a *live* node's
-  namespace (``wiki/<node>/…``); a namespace that is not a live node is an orphan.
+- **SO3 Single-writer** — an artifact's declared ``owner`` matches its immutable charter owner.
+- **SO6 No orphan** — every file under ``wiki/<node>/`` or ``tools/<node>/`` and every namespaced node skill
+  under ``.github/skills/agent-org-<node>-<skill>/`` belongs to a live node.
 - **Freshness (partial)** — an artifact's ``sources`` front-matter must resolve to existing files
   (dangling refs are caught; the "sources-changed ⇒ re-touched" half needs a diff and lives elsewhere).
 
@@ -22,7 +22,11 @@ from pathlib import Path
 
 import yaml
 
-BUNDLE_KINDS = ("skills", "tools", "wiki")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
+import owner_validator as ov  # noqa: E402
+
+BUNDLE_KINDS = ("tools", "wiki")
+KERNEL_SKILLS = {"agent-org-design", "agent-org-wiki-curate"}
 
 
 def _front_matter(text: str) -> dict:
@@ -55,9 +59,99 @@ def _front_matter(text: str) -> dict:
     return fm
 
 
+def _node_skill_bundles(root):
+    base = root / ".github" / "skills"
+    if not base.is_dir():
+        return
+    for directory in sorted(path for path in base.iterdir() if path.is_dir()):
+        if directory.name in KERNEL_SKILLS or not directory.name.startswith("agent-org-"):
+            continue
+        skill = directory / "SKILL.md"
+        fields, error = _skill_front_matter(
+            skill.read_text(encoding="utf-8", errors="replace")
+        ) if skill.is_file() else ({}, None)
+        yield directory, skill, fields, error
+
+
+def _skill_front_matter(text):
+    if not text.startswith("---"):
+        return {}, None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, "front matter is not terminated"
+    try:
+        fields = yaml.safe_load(text[3:end]) or {}
+    except yaml.YAMLError as error:
+        return {}, str(error)
+    if not isinstance(fields, dict):
+        return {}, "front matter must be a mapping"
+    return fields, None
+
+
+def _skill_sources(fields):
+    if "sources" not in fields:
+        return [], None
+    sources = fields["sources"]
+    if not isinstance(sources, list) or any(
+        not isinstance(source, str) or not source.strip() for source in sources
+    ):
+        return [], "sources must be a list of non-empty path strings"
+    return sources, None
+
+
+def _skill_source_violations(root, rel, fields, rule="bundle"):
+    sources, error = _skill_sources(fields)
+    if error:
+        return [{"rule": rule, "path": rel, "evidence": f"invalid sources: {error}"}]
+    return [
+        {"rule": rule, "path": rel, "evidence": f"dangling source {source!r}"}
+        for source in sources
+        if not (root / source).exists()
+    ]
+
+
+def _metadata_violations(root, file, namespace):
+    if file.suffix.lower() != ".md":
+        return []
+    rel = file.relative_to(root).as_posix()
+    fields = _front_matter(file.read_text(encoding="utf-8", errors="replace"))
+    violations = []
+    owner = fields.get("owner")
+    if owner and owner != namespace:
+        violations.append({
+            "rule": "bundle",
+            "path": rel,
+            "evidence": f"owner {owner!r} != namespace {namespace!r} (single-writer)",
+        })
+    for source in fields.get("sources") or []:
+        if not (root / source).exists():
+            violations.append({"rule": "bundle", "path": rel, "evidence": f"dangling source {source!r}"})
+    return violations
+
+
+def _skill_metadata_violations(root, file, namespace):
+    if file.suffix.lower() != ".md":
+        return []
+    rel = file.relative_to(root).as_posix()
+    fields, error = _skill_front_matter(file.read_text(encoding="utf-8", errors="replace"))
+    if error:
+        return [{"rule": "bundle", "path": rel, "evidence": f"invalid YAML front matter: {error}"}]
+    violations = []
+    owner = fields.get("owner")
+    if owner and owner != namespace:
+        violations.append({
+            "rule": "bundle",
+            "path": rel,
+            "evidence": f"owner {owner!r} != charter owner {namespace!r} (single-writer)",
+        })
+    violations.extend(_skill_source_violations(root, rel, fields))
+    return violations
+
+
 def check_bundle(org, root) -> dict:
     root = Path(root)
     live = {n["id"] for n in org.get("nodes", [])}
+    compiled = ov.compile_nodes(org.get("nodes", []))
     violations = []
 
     for nid in sorted(live):  # SO2
@@ -79,16 +173,83 @@ def check_bundle(org, root) -> dict:
                 violations.append({"rule": "bundle", "path": rel,
                                    "evidence": f"namespace {ns!r} is not a live node (orphan)"})
                 continue
-            if f.suffix.lower() == ".md":
-                fm = _front_matter(f.read_text(encoding="utf-8", errors="replace"))
-                owner = fm.get("owner")
-                if owner and owner != ns:  # SO3
-                    violations.append({"rule": "bundle", "path": rel,
-                                       "evidence": f"owner {owner!r} != namespace {ns!r} (single-writer)"})
-                for src in (fm.get("sources") or []):  # freshness (dangling half)
-                    if not (root / src).exists():
-                        violations.append({"rule": "bundle", "path": rel,
-                                           "evidence": f"dangling source {src!r}"})
+            violations.extend(_metadata_violations(root, f, ns))
+
+    for directory, skill, fields, error in _node_skill_bundles(root):
+        rel = directory.relative_to(root).as_posix()
+        if not skill.is_file():
+            violations.append({"rule": "bundle", "path": rel, "evidence": "node skill is missing SKILL.md"})
+            continue
+        skill_rel = skill.relative_to(root).as_posix()
+        if error:
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": f"invalid YAML front matter: {error}",
+            })
+            continue
+        matches = ov.owners_of(compiled, skill_rel)
+        owner = matches[0] if len(matches) == 1 else None
+        if owner is None:
+            status = "overlap" if matches else "unowned"
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": (
+                    f"node skill has no single live charter owner (orphan): "
+                    f"{status} {matches}"
+                ),
+            })
+            continue
+        declared_owner = fields.get("owner")
+        if declared_owner != owner:
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": f"owner {declared_owner!r} != charter owner {owner!r} (single-writer)",
+            })
+        expected_prefix = f"agent-org-{owner}-"
+        if not directory.name.startswith(expected_prefix) or len(directory.name) == len(expected_prefix):
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": f"skill folder does not match charter owner {owner!r} (single-writer)",
+            })
+        if fields.get("name") != directory.name:
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": f"skill name {fields.get('name')!r} != folder {directory.name!r}",
+            })
+        if fields.get("user-invocable") is not False:
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": "node skill must set user-invocable: false",
+            })
+        if (
+            "disable-model-invocation" in fields
+            and fields["disable-model-invocation"] is not False
+        ):
+            violations.append({
+                "rule": "bundle",
+                "path": skill_rel,
+                "evidence": "node skill must allow model invocation",
+            })
+        violations.extend(_skill_source_violations(root, skill_rel, fields))
+        for file in sorted(path for path in directory.rglob("*") if path.is_file() and path != skill):
+            file_rel = file.relative_to(root).as_posix()
+            file_matches = ov.owners_of(compiled, file_rel)
+            if file_matches != [owner]:
+                violations.append({
+                    "rule": "bundle",
+                    "path": file_rel,
+                    "evidence": (
+                        f"charter ownership {file_matches!r} != owning skill {owner!r} "
+                        "(single-writer)"
+                    ),
+                })
+            violations.extend(_skill_metadata_violations(root, file, owner))
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 
@@ -115,6 +276,32 @@ def check_freshness(root, changed_paths) -> dict:
             if changed_sources and rel not in changed:
                 violations.append({"rule": "freshness", "path": rel,
                                    "evidence": f"sources changed {changed_sources} but not re-touched"})
+    for directory, skill, fields, error in _node_skill_bundles(root):
+        if not skill.is_file() or error:
+            continue
+        for file in sorted(path for path in directory.rglob("*.md") if path.is_file()):
+            file_fields, file_error = _skill_front_matter(file.read_text(encoding="utf-8", errors="replace"))
+            rel = file.relative_to(root).as_posix()
+            if file_error:
+                continue
+            sources, sources_error = _skill_sources(file_fields)
+            if sources_error:
+                violations.append({
+                    "rule": "freshness",
+                    "path": rel,
+                    "evidence": f"invalid sources: {sources_error}",
+                })
+                continue
+            if not sources:
+                continue
+            checked += 1
+            changed_sources = [source for source in sources if source.replace("\\", "/") in changed]
+            if changed_sources and rel not in changed:
+                violations.append({
+                    "rule": "freshness",
+                    "path": rel,
+                    "evidence": f"sources changed {changed_sources} but not re-touched",
+                })
     return {"status": "ok" if not violations else "violations", "violations": violations, "checked": checked}
 
 

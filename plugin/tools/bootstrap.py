@@ -77,7 +77,15 @@ def _read(path):
 
 def _assets(source):
     root = Path(source).resolve() if source is not None else Path(__file__).resolve().parents[1]
-    installed = (root / "templates" / "_node.template.md").is_file()
+    plugin = (root / "plugin.json").is_file()
+    installed = (
+        not plugin
+        and (root / "tools" / "bootstrap.py").is_file()
+        and (root.parent / "agents" / "splitter.md").is_file()
+        and (root.parent / "instructions" / "agent-org.instructions.md").is_file()
+    )
+    if not plugin and not installed:
+        raise BootstrapError(f"Runtime source is neither a plugin root nor an installed agent-org runtime: {root}")
     return {
         "agents": root.parent / "agents" if installed else root / "agents",
         "extension": root.parent / "extensions" / "agent-org" if installed else root / "extensions" / "agent-org",
@@ -85,7 +93,8 @@ def _assets(source):
         "instructions": root.parent / "instructions" if installed else root / "instructions",
         "loops": root / "loops",
         "root": root,
-        "template": root / "templates" / "_node.template.md" if installed else root / "agents" / "_node.template.md",
+        "skills": root.parent / "skills" if installed else root / "skills",
+        "template": root / "templates" / "_node.template.md",
     }
 
 
@@ -129,8 +138,8 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
 
     for name in ("leaf.md", "parent.md"):
         copy(f".github/agent-org/loops/{name}", assets["loops"] / name)
-    for name in ("agent-org-design", "bootstrap", "wiki-curate"):
-        copy(f".github/agent-org/skills/{name}/SKILL.md", assets["root"] / "skills" / name / "SKILL.md")
+    for name in ("agent-org-design", "agent-org-wiki-curate"):
+        copy(f".github/skills/{name}/SKILL.md", assets["skills"] / name / "SKILL.md")
     for name in ("README.md", "bootstrap.py", "owner_validator.py", "requirements.txt", "worktree.py"):
         copy(f".github/agent-org/tools/{name}", assets["root"] / "tools" / name)
     hook = assets["root"] / "tools" / "hook.ps1"

@@ -35,7 +35,14 @@ def organization():
     return {
         "nodes": [
             {
-                "charter": {"domain": [".github/**", ".gitignore", "org.json", "shared/**"]},
+                "charter": {
+                    "domain": [".github/**", ".gitignore", "org.json", "shared/**"],
+                    "excludes": [
+                        ".github/skills/agent-org-inventory-*/**",
+                        ".github/skills/agent-org-receipts-*/**",
+                        ".github/skills/agent-org-warehouse-*/**",
+                    ],
+                },
                 "children": ["audit", "inventory"],
                 "id": "coordinator",
                 "mode": "Parent",
@@ -49,7 +56,14 @@ def organization():
                 "parent": "coordinator",
             },
             {
-                "charter": {"domain": ["inventory/**"]},
+                "charter": {
+                    "domain": [
+                        ".github/skills/agent-org-inventory-*/**",
+                        ".github/skills/agent-org-receipts-*/**",
+                        ".github/skills/agent-org-warehouse-*/**",
+                        "inventory/**",
+                    ],
+                },
                 "children": [],
                 "id": "inventory",
                 "mode": "Leaf",
@@ -103,13 +117,18 @@ def inventory_split(org):
     org["version"] = 2
     inventory = next(node for node in org["nodes"] if node["id"] == "inventory")
     inventory.update(
-        charter={"domain": ["inventory/stock.txt"]},
+        charter={"domain": [".github/skills/agent-org-inventory-*/**", "inventory/stock.txt"]},
         children=["receipts", "warehouse"],
         mode="Parent",
     )
     for node_id in ("receipts", "warehouse"):
         org["nodes"].append({
-            "charter": {"domain": [f"inventory/{node_id}/**"]},
+            "charter": {
+                "domain": [
+                    f".github/skills/agent-org-{node_id}-*/**",
+                    f"inventory/{node_id}/**",
+                ],
+            },
             "children": [],
             "id": node_id,
             "mode": "Leaf",
@@ -558,12 +577,13 @@ def local_repo(repo):
     write(repo, ".github/agents/human.md", "not generated\n")
     write(repo, ".github/instructions/agent-org-local.instructions.md", "local instructions\n")
     write(repo, ".github/instructions/human.instructions.md", "not generated\n")
+    write(repo, ".github/skills/human-release/SKILL.md", "not generated\n")
     write(repo, "private.txt", "not copied\n")
     exclude = ov.git_common_dir(repo) / "info" / "exclude"
     exclude.write_text(
         exclude.read_text(encoding="utf-8")
         + "\n/.github/agents/human.md\n/.github/instructions/agent-org-local.instructions.md\n"
-        + "/.github/instructions/human.instructions.md\n/private.txt\n",
+        + "/.github/instructions/human.instructions.md\n/.github/skills/human-release/SKILL.md\n/private.txt\n",
         encoding="utf-8",
     )
     assert not git(repo, "status", "--porcelain")
@@ -580,6 +600,10 @@ def test_local_overlay_is_provisioned_without_status_noise_and_runs(local_repo):
     assert not (tree / "private.txt").exists()
     assert not (tree / ".github" / "agents" / "human.md").exists()
     assert not (tree / ".github" / "instructions" / "human.instructions.md").exists()
+    assert not (tree / ".github" / "skills" / "human-release" / "SKILL.md").exists()
+    assert (tree / ".github" / "skills" / "agent-org-design" / "SKILL.md").exists()
+    assert (tree / ".github" / "skills" / "agent-org-wiki-curate" / "SKILL.md").exists()
+    assert not (tree / ".github" / "skills" / "bootstrap").exists()
     assert not (tree / ".github" / "agent-org" / "tools" / "__pycache__" / "unwanted.pyc").exists()
     assert not (tree / ".github" / "agent-org" / "cache" / "proposal.json").exists()
     result = subprocess.run(
@@ -621,12 +645,19 @@ def test_local_split_configuration_and_new_definitions_persist_before_cleanup(lo
     write(tree, ".github/agents/inventory.md", "inventory parent definition\n")
     write(tree, ".github/agents/receipts.md", "receipts definition\n")
     write(tree, ".github/agents/warehouse.md", "warehouse definition\n")
+    write(
+        tree,
+        ".github/skills/agent-org-receipts-record/SKILL.md",
+        "---\nname: agent-org-receipts-record\nowner: receipts\nsources: [inventory/receipts/new.txt]\n"
+        "user-invocable: false\n---\nrecord receipts\n",
+    )
     write(tree, "inventory/receipts/new.txt", "receipt data\n")
     result = wt.integrate(repo, run["session_id"])
     assert result["integrated"], result
     assert json.loads((repo / "org.json").read_text())["version"] == 2
     assert (repo / ".github" / "agents" / "receipts.md").read_text() == "receipts definition\n"
     assert (repo / ".github" / "agents" / "inventory.md").read_text() == "inventory parent definition\n"
+    assert ".github/skills/agent-org-receipts-record/SKILL.md" in git(repo, "ls-files").splitlines()
     assert not git(repo, "status", "--porcelain")
     assert not git(tree, "status", "--porcelain")
     assert not set(run["local_files"]) & set(git(repo, "ls-files").splitlines())

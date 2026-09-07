@@ -196,6 +196,136 @@ def test_normalize_backslashes_and_dot_prefix():
     assert ov.normalize("././z") == "z"
 
 
+def prefix_skill_org():
+    return org("root", [
+        node("root", ["shared/**"], parent=None, children=["auth", "other"], mode="Parent"),
+        node(
+            "auth",
+            [".github/skills/agent-org-auth-*/**", "auth/**"],
+            excludes=[".github/skills/agent-org-auth-api-*/**"],
+            parent="root",
+            children=["auth-api", "auth-ui"],
+            mode="Parent",
+        ),
+        node(
+            "auth-api",
+            [".github/skills/agent-org-auth-api-*/**", "auth/api/**"],
+            parent="auth",
+            mode="Leaf",
+        ),
+        node(
+            "auth-ui",
+            [".github/skills/agent-org-auth-ui-*/**", "auth/ui/**"],
+            parent="auth",
+            mode="Leaf",
+        ),
+        node("other", ["other/**"], parent="root", mode="Leaf"),
+    ])
+
+
+def test_standard_skill_ownership_comes_from_explicit_charters():
+    o = prefix_skill_org()
+    child = ".github/skills/agent-org-auth-api-refresh/SKILL.md"
+    parent = ".github/skills/agent-org-auth-review/SKILL.md"
+    assert ov.ownership(o, child)["owner"] == "auth-api"
+    assert ov.ownership(o, parent)["owner"] == "auth"
+
+
+def test_proposed_skill_metadata_cannot_reassign_existing_descendant(tmp_path):
+    o = prefix_skill_org()
+    path = tmp_path / ".github" / "skills" / "agent-org-auth-api-refresh" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nname: agent-org-auth-api-refresh\nowner: auth-api\n---\n", encoding="utf-8")
+    payload = {
+        "cwd": str(tmp_path),
+        "toolArgs": {
+            "content": "---\nname: agent-org-auth-api-refresh\nowner: auth\nuser-invocable: false\n---\n",
+            "path": str(path),
+        },
+        "toolName": "edit",
+    }
+    decision, records = ov.classify_write(payload, o, acting="auth", root=tmp_path)
+    assert decision["permissionDecision"] == "deny"
+    assert records == [{
+        "acting": "auth",
+        "disposition": "deny",
+        "owner": "auth-api",
+        "path": ".github/skills/agent-org-auth-api-refresh/SKILL.md",
+    }]
+
+
+def test_new_skill_and_companion_paths_support_absolute_and_subdirectory_patches(tmp_path):
+    o = prefix_skill_org()
+    relative_skill = ".github/skills/agent-org-auth-api-refresh/SKILL.md"
+    relative_companion = ".github/skills/agent-org-auth-api-refresh/examples/sample.json"
+    subdirectory = tmp_path / "work"
+    subdirectory.mkdir()
+    subdirectory_skill = "..\\" + relative_skill.replace("/", "\\")
+    subdirectory_companion = "..\\" + relative_companion.replace("/", "\\")
+    path_sets = [
+        (tmp_path, str(tmp_path / Path(relative_skill)), str(tmp_path / Path(relative_companion))),
+        (subdirectory, subdirectory_skill, subdirectory_companion),
+    ]
+    for cwd, skill_path, companion_path in path_sets:
+        payload = {
+            "cwd": str(cwd),
+            "toolArgs": {
+                "input": (
+                    "*** Begin Patch\n"
+                    f"*** Add File: {skill_path}\n"
+                    "+---\n+name: agent-org-auth-api-refresh\n+owner: auth\n+user-invocable: false\n+---\n"
+                    f"*** Add File: {companion_path}\n"
+                    "+{}\n"
+                    "*** End Patch\n"
+                ),
+            },
+            "toolName": "apply_patch",
+        }
+        decision, records = ov.classify_write(payload, o, acting="auth-api", root=tmp_path)
+        assert decision["permissionDecision"] == "allow"
+        assert records == []
+
+
+def test_skill_deletion_rename_and_companion_ownership_do_not_depend_on_metadata(tmp_path):
+    o = prefix_skill_org()
+    old = tmp_path / ".github" / "skills" / "agent-org-auth-api-refresh" / "SKILL.md"
+    old.parent.mkdir(parents=True)
+    old.write_text("---\nname: agent-org-auth-api-refresh\nowner: auth-api\n---\n", encoding="utf-8")
+    companion = old.parent / "examples" / "sample.json"
+    assert ov.ownership(o, companion.relative_to(tmp_path).as_posix())["owner"] == "auth-api"
+    old.unlink()
+    delete = {"cwd": str(tmp_path), "toolArgs": {"path": str(old)}, "toolName": "delete"}
+    decision, records = ov.classify_write(delete, o, acting="auth-api", root=tmp_path)
+    assert decision["permissionDecision"] == "allow"
+    assert records == []
+    rename = {
+        "cwd": str(tmp_path),
+        "toolArgs": {
+            "input": (
+                "*** Begin Patch\n"
+                "*** Update File: .github/skills/agent-org-auth-api-refresh/SKILL.md\n"
+                "*** Move to: .github/skills/agent-org-auth-api-renamed/SKILL.md\n"
+                "@@\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            ),
+        },
+        "toolName": "apply_patch",
+    }
+    decision, records = ov.classify_write(rename, o, acting="auth-api", root=tmp_path)
+    assert decision["permissionDecision"] == "allow"
+    assert records == []
+
+
+def test_unrelated_skill_metadata_does_not_change_charter_ownership(tmp_path):
+    o = org("root", [node("root", [".github/**"], parent=None, mode="Leaf")])
+    path = tmp_path / ".github" / "skills" / "human-release" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nname: human-release\nowner: person\n---\n", encoding="utf-8")
+    assert ov.ownership(o, path.relative_to(tmp_path).as_posix())["owner"] == "root"
+
+
 # --- glob boundary cases (gitignore dialect via pathspec) -------------------------------------------
 
 def test_glob_slashless_matches_any_depth_but_anchored_does_not():
@@ -338,6 +468,21 @@ def test_split_rejects_path_leaving_subtree():
     old, new = _root_split()  # new main domain is only root.txt; a/**, b/** cover the rest
     r = ov.check_split(old, new, ["a/x", "b/y", "orphan.txt"])  # orphan matches nothing new
     assert any("left the split subtree" in v["evidence"] for v in r["violations"]), r
+
+
+def test_split_rejects_absorbing_a_previously_unowned_path():
+    old = org("main", [node("main", ["owned/**"], parent=None, mode="Leaf")])
+    old["version"] = 3
+    new = {"version": 4, "root": "main", "nodes": [
+        node("main", ["owned/shared.txt"], parent=None, children=["a", "b"], mode="Parent"),
+        node("a", ["owned/a/**"], parent="main", mode="Leaf"),
+        node("b", ["orphan/**"], parent="main", mode="Leaf"),
+    ]}
+    result = ov.check_split(old, new, ["owned/shared.txt", "owned/a/x", "orphan/new.py"])
+    assert any(
+        violation["evidence"] == "path orphan/new.py changed owner outside the split: [] -> ['b']"
+        for violation in result["violations"]
+    ), result
 
 
 # --- preToolUse hook: warn/enforce classification + in-place identity + foreign-log ----------------

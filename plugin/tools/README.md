@@ -2,7 +2,7 @@
 
 Run these commands in PowerShell from a bootstrapped repository root. Runtime tools live in
 `.github\agent-org\tools`; node-owned automation remains separate under `tools\<node>`.
-The [bootstrap skill](..\skills\bootstrap\SKILL.md) documents adoption and configuration.
+The plugin's `bootstrap` skill documents adoption and configuration.
 
 ## Bootstrap
 
@@ -26,8 +26,8 @@ python .github\agent-org\tools\bootstrap.py @bootstrapArgs
 
 Omitted legacy fields retain the CLI defaults instead of being passed as null options.
 
-The copied CLI supports same-configuration reruns and role rendering without the original plugin. For installed
-paths, profile selection, and conflict handling, see the [bootstrap skill](..\skills\bootstrap\SKILL.md#installed-layout).
+The copied CLI supports same-configuration reruns and role rendering without the original plugin. The plugin's
+`bootstrap` skill defines installed paths, profile selection, and conflict handling.
 
 Python APIs in `bootstrap.py`:
 

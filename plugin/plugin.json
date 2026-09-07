@@ -4,5 +4,5 @@
   "description": "Agent orchestration that adapts to a repository and grows from one agent into a hierarchical agent org.",
   "author": "Alok Nigam",
   "keywords": ["multi-agents", "self-organizing"],
-  "skills": ["skills/agent-org-design", "skills/bootstrap", "skills/wiki-curate"]
+  "skills": ["skills/bootstrap"]
 }

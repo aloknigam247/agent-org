@@ -61,9 +61,10 @@ your parent rather than editing a foreign domain. An unsplit root also performs 
 
 ## Finish
 
-Maintain only bundle artifacts that meet the payback rule in section 3 of
-`.github\agent-org\skills\agent-org-design\SKILL.md`; consult it on demand. Use
-`.github\agent-org\skills\wiki-curate\SKILL.md` when recording durable knowledge.
+Maintain only bundle artifacts that meet the payback rule. Invoke `agent-org-design` through the native skill
+tool when its reference is needed, and invoke `agent-org-wiki-curate` before recording durable knowledge. Do not
+read SKILL.md as a substitute for invoking a registered skill. If a skill was added during this session, request
+`/skills reload` and surface that discovery requirement instead of claiming the skill is already available.
 Run the task's targeted checks and the owner validator. Report touched paths, validation, and unresolved
 foreign changes. Query `owner_validator.py --split-advice` with your node id; return a SplitProposal when
 advised, using the shape in `.github\agents\splitter.md`. Do not mutate the organization yourself.

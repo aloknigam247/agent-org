@@ -23,11 +23,14 @@ def test_shared_role_sections_remain_identical(heading):
 def test_only_self_contained_role_files_are_shipped():
     assert {file.name for file in (PLUGIN / "loops").iterdir()} == {"leaf.md", "parent.md"}
     manifest = json.loads((PLUGIN / "plugin.json").read_text(encoding="utf-8"))
-    assert "skills/agent-org-loop" not in manifest["skills"]
+    assert manifest["skills"] == ["skills/bootstrap"]
     for role in ("leaf", "parent"):
         content = (PLUGIN / "loops" / f"{role}.md").read_text(encoding="utf-8")
         assert "common.md" not in content
-        assert r".github\agent-org\skills\agent-org-design\SKILL.md" in content
+        assert "invoke `agent-org-design` through the native skill" in content.lower()
+        assert "invoke `agent-org-wiki-curate`" in content.lower()
+        assert "/skills reload" in content
+        assert "read SKILL.md as a substitute" in content
         assert "Only the root session creates a worktree" in content
         assert "descendants never create, integrate," in content
         assert "only the root integrates and cleans up" in content
@@ -43,9 +46,9 @@ def test_role_specific_behavior_stays_separate():
     assert "## Plan, delegate, and reconcile" not in leaf
 
 
-def test_default_root_definition_points_directly_to_leaf_body():
-    text = (PLUGIN / "agents" / "main.md").read_text(encoding="utf-8")
+def test_canonical_template_points_directly_to_substituted_loop():
+    text = (PLUGIN / "templates" / "_node.template.md").read_text(encoding="utf-8")
     _, header, body = text.split("---", 2)
     assert "loop:" not in header
-    assert re.findall(r"^loop: (.+)$", body, re.MULTILINE) == [r".github\agent-org\loops\leaf.md"]
-    assert r".github\agents\main.md" not in body
+    assert re.findall(r"^loop: (.+)$", body, re.MULTILINE) == ["{{loop}}"]
+    assert "{{id}}" in body

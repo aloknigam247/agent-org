@@ -28,19 +28,24 @@ meta-agent for approved organization changes, not a domain owner.
 
 Operating procedures live in the installed Host instructions and `.github\agent-org\loops`.
 
-Only `org.root` (default `main`) and the `bootstrap` skill are user-invocable entry points. Other agents,
-including `splitter`, and all other skills use `user-invocable: false`. Keep them available for agent
-invocation; this setting limits manual invocation, not filesystem visibility.
+Only `org.root` (default `main`) and the plugin's `bootstrap` skill are user-invocable entry points. Other agents,
+including `splitter`, and operational or node-owned skills use `user-invocable: false` while remaining available
+for native model invocation.
 
 ### 2.2 Charters and managed scope
 
-[`org.schema.json`](..\..\org.schema.json) defines configuration and charter fields, including legacy defaults.
+[`org.schema.json`](..\..\agent-org\org.schema.json) defines configuration and charter fields, including legacy defaults.
 The stable managed scope is independent of a node's effective domain: `domain` minus `excludes`.
 Splitting the root does not reduce the managed area to its retained files.
 
 The owner validator reports `UNOWNED` for a gap inside that area and `overlap` for multiple owners. An
 outside-scope path is unmanaged rather than a gap. Resolve managed gaps with an explicit approved organization
 change, not by treating an uncovered file as permission to write or by silently widening a charter.
+
+Node skill paths follow the same rule. Put `.github/skills/agent-org-<owner>-*/**` in the owner's explicit
+`domain`, and exclude any descendant's more specific skill namespace from a broader parent pattern. For
+prefix-related ids, use non-overlapping `domain` and `excludes` entries; folder names or mutable `owner`
+frontmatter never override charter ownership.
 
 Tree validation checks a single acyclic root, matching parent/child references, and the role constraints in
 the schema. A Parent retains a shared set rather than blanket-owning descendant implementation.
@@ -70,12 +75,12 @@ reset a shared worktree that contains siblings' changes.
 
 The lifecycle, descendant context protocol, and isolation limits are defined in
 each self-contained role file under `.github\agent-org\loops`; the
-[tool reference](..\..\tools\README.md) gives setup prerequisites.
+[tool reference](..\..\agent-org\tools\README.md) gives setup prerequisites.
 
 ### 2.6 Bootstrap and storage
 
-See the [bootstrap skill](..\bootstrap\SKILL.md) for adoption, installed layout, and local/tracked storage.
-The canonical plugin seed initializes each target's mutable organization; targets never share live state.
+The plugin's `bootstrap` skill defines adoption, installed layout, and local/tracked storage. The canonical plugin
+seed initializes each target's mutable organization; targets never share live state.
 
 ### 2.7 Owner validation
 
@@ -84,7 +89,7 @@ Its pathspec globs use gitignore semantics, including exclusions. Matching is ca
 dotfiles. Git paths are normalized to repository-relative slash form as data; commands use Windows paths.
 
 Validate repository coverage and the actual changed-path set, including new files, rather than trusting only a
-child's reported file list. See the [tool reference](..\..\tools\README.md) for commands and exit behavior.
+child's reported file list. See the [tool reference](..\..\agent-org\tools\README.md) for commands and exit behavior.
 
 ### 2.8 Boundaries and reconciliation
 
@@ -98,11 +103,12 @@ profile for between-run drift and checkpoint timing.
 Every live node has an agent definition and can maintain artifacts under its own namespaces:
 
 - `wiki\<owner>\` for durable knowledge.
-- `skills\<owner>\` for reusable procedures.
+- `.github\skills\agent-org-<owner>-<skill>\` for reusable procedures and their companion resources.
 - `tools\<owner>\` for mechanical automation and its manifest.
 
 Create artifacts on demand, not empty directories or speculative indexes at bootstrap. Definitions point to
-the live charter rather than duplicating mutable ownership data.
+the live charter rather than duplicating mutable ownership data. A node skill's declared `owner` is validated
+against the charter owner of its path; it does not assign ownership.
 
 ### 3.2 Payback and artifact choice
 
@@ -117,8 +123,8 @@ or when it documents something just changed. Drop facts cheap to re-read from so
 
 ### 3.3 Wiki maintenance
 
-Follow [wiki-curate](..\wiki-curate\SKILL.md) for note selection, recording, and consolidation. Remove dead
-artifacts instead of keeping an unused cache.
+Invoke `agent-org-wiki-curate` through the native skill tool for note selection, recording, and consolidation.
+Do not read SKILL.md as a substitute for invocation. Remove dead artifacts instead of keeping an unused cache.
 
 ### 3.4 Single-writer and freshness
 
@@ -140,17 +146,21 @@ sources: [src/catalog/schema.json]
 ---
 ```
 
-A skill lives at `skills\<owner>\<name>\SKILL.md`:
+A skill lives at `.github\skills\agent-org-<owner>-<skill>\SKILL.md`. The folder and metadata name match, and
+supporting files stay inside the same directory:
 
 ```yaml
 ---
-name: add-catalog-item
+name: agent-org-catalog-add-item
 description: Use when adding a catalog item.
 owner: catalog
 sources: [src/catalog/schema.json]
 user-invocable: false
 ---
 ```
+
+Invoke it through the native skill tool as `agent-org-catalog-add-item`. After adding or renaming a skill during
+a session, request `/skills reload` before invocation and surface the limitation until discovery refreshes.
 
 A tool belongs under `tools\<owner>\` with a row in that owner's `manifest.md`:
 

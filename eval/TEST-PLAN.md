@@ -18,6 +18,7 @@ design's examples. Deterministic failures must be resolved before interpreting a
 | Parallel root sessions isolated; integration serialized | Worktree lifecycle, lock contention, conflict preservation | Concurrent root runs |
 | Hybrid changes between runs detected without reassigning ownership | Source snapshots, added/modified/deleted path checks | Hybrid orientation |
 | Eval-only bundle validation never installed | Bootstrap/package assertions; `tests/test_bundle_validator.py` | Fixture preflight |
+| Standard node skills preserve exact ownership without absorbing human skills | Bundle, hook, and worktree tests | Fixture preflight |
 | Session identity survives shared-worktree execution | Marker parsing, task injection, extension adapter tests | Child tool calls |
 | Concurrent same-role sessions never share audit records accidentally | Run/session audit partition tests | Parallel child calls |
 | Correct final files do not hide absent delegation | Grader and advisory-trajectory assertions | `routing-to-child`, `shared-session-routing` |

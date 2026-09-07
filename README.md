@@ -18,7 +18,9 @@ the selected instruction profiles, and reports validation. It does not initializ
 stage changes, or modify global settings.
 
 Follow the [bootstrap skill](plugin\skills\bootstrap\SKILL.md) for the complete setup procedure and installed
-layout. Configuration and compatibility defaults are defined in the [schema](plugin\org.schema.json).
+layout. Bootstrap installs operational skills in `.github\skills`; run `/skills reload` before invoking skills
+added during the current session. Configuration and compatibility defaults are defined in the
+[schema](plugin\org.schema.json).
 
 ## Use
 
