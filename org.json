@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "root": "main",
+  "nodes": [
+    {
+      "id": "main",
+      "parent": null,
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": [
+          "**"
+        ],
+        "concerns": [
+          "owns the configured scope until the first split",
+          "does all work directly; proposes a gated split when overloaded"
+        ],
+        "excludes": []
+      }
+    }
+  ],
+  "collaboration": "agents",
+  "scope": [
+    "**"
+  ],
+  "storage": "tracked"
+}
