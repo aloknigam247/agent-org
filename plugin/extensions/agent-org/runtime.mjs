@@ -7,7 +7,7 @@ export function createRuntime(callOracle, reportError = console.error) {
   const roots = new Map();
 
   function payload(input, invocation) {
-    const sessionId = invocation?.sessionId ?? input.sessionId;
+    const sessionId = input.sessionId ?? invocation?.sessionId;
     return {
       ...input,
       agentOrgContext: contexts.get(sessionId),
@@ -30,7 +30,7 @@ export function createRuntime(callOracle, reportError = console.error) {
     onPostToolUse: (input, invocation) => toolHook(input, invocation, true),
     onPreToolUse: (input, invocation) => toolHook(input, invocation, false),
     onSessionEnd: async (input, invocation) => {
-      contexts.delete(invocation?.sessionId ?? input.sessionId);
+      contexts.delete(input.sessionId ?? invocation?.sessionId);
     },
     onUserPromptSubmitted: async (input, invocation) => {
       const value = payload(input, invocation);
