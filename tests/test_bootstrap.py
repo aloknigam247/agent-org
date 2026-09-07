@@ -216,15 +216,13 @@ def test_custom_root_is_rendered_without_default_agent(repo):
     assert (PLUGIN / "seed" / "org.json").read_bytes() == original_seed
 
 
-@pytest.mark.parametrize("path", sorted((PLUGIN / "agents").glob("*.md")), ids=lambda path: path.stem)
-def test_plugin_agent_invocation_defaults(path):
-    content = path.read_bytes()
-    if path.name == "_node.template.md":
-        assert b"\nuser-invocable: false\n" in content.replace(b"\r\n", b"\n")
-    else:
-        fields = frontmatter(content)
-        assert fields["user-invocable"] is (path.stem == "main")
-        assert fields.get("disable-model-invocation", False) is False
+def test_plugin_agent_assets_have_no_static_root_definition():
+    assert {path.name for path in (PLUGIN / "agents").glob("*.md")} == {"splitter.md"}
+    fields = frontmatter((PLUGIN / "agents" / "splitter.md").read_bytes())
+    assert fields["user-invocable"] is False
+    assert fields.get("disable-model-invocation", False) is False
+    template = (PLUGIN / "templates" / "_node.template.md").read_bytes().replace(b"\r\n", b"\n")
+    assert b"\nuser-invocable: false\n" in template
 
 
 @pytest.mark.parametrize("path", sorted((PLUGIN / "skills").rglob("SKILL.md")), ids=lambda path: path.parent.name)
@@ -234,15 +232,25 @@ def test_only_bootstrap_skill_is_user_invocable(path):
     assert fields.get("disable-model-invocation", False) is False
 
 
+def test_plugin_registers_only_bootstrap_skill():
+    manifest = json.loads((PLUGIN / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["skills"] == ["skills/bootstrap"]
+
+
 @pytest.mark.parametrize("root_name", ["main", "navigator"])
 def test_bootstrap_preserves_only_public_entry_points(repo, root_name):
     bootstrap.bootstrap_repo(repo, root_name=root_name, source=PLUGIN)
     for file in (repo / ".github" / "agents").glob("*.md"):
         assert frontmatter(file.read_bytes())["user-invocable"] is (file.stem == root_name)
-    copied = repo / ".github" / "agent-org"
+    copied = repo / ".github" / "skills"
+    assert {file.parent.name for file in copied.rglob("SKILL.md")} == {
+        "agent-org-design", "agent-org-wiki-curate"
+    }
     for file in copied.rglob("SKILL.md"):
         fields = frontmatter(file.read_bytes())
-        assert fields["user-invocable"] is (fields["name"] == "bootstrap")
+        assert fields["user-invocable"] is False
+        assert fields["name"] == file.parent.name
+    assert not (copied / "bootstrap").exists()
 
 
 def test_non_root_promotion_and_new_children_remain_internal(repo):
@@ -273,9 +281,16 @@ def test_non_root_promotion_and_new_children_remain_internal(repo):
 def test_renderer_rejects_a_template_that_makes_children_user_invocable(tmp_path):
     source = tmp_path / "plugin"
     shutil.copytree(PLUGIN, source)
-    template = source / "agents" / "_node.template.md"
+    template = source / "templates" / "_node.template.md"
     write(template, template.read_text(encoding="utf-8").replace("user-invocable: false", "user-invocable: true"))
     with pytest.raises(bootstrap.BootstrapError, match="user-invocable: false"):
+        bootstrap.runtime_files(seed(), source=source)
+
+
+def test_template_presence_alone_does_not_misclassify_a_source(tmp_path):
+    source = tmp_path / "ambiguous source"
+    write(source / "templates" / "_node.template.md", "not a runtime")
+    with pytest.raises(bootstrap.BootstrapError, match="neither a plugin root nor an installed"):
         bootstrap.runtime_files(seed(), source=source)
 
 
@@ -295,6 +310,14 @@ def test_runtime_rendering_uses_live_roles_and_stable_scope(tmp_path):
     assert ".github/instructions/agent-org.scope-full.instructions.md" not in files
     assert ".github/agents/_node.template.md" not in files
     assert ".github/agent-org/templates/_node.template.md" in files
+    assert {name for name in files if name.startswith(".github/skills/")} == {
+        ".github/skills/agent-org-design/SKILL.md",
+        ".github/skills/agent-org-wiki-curate/SKILL.md",
+    }
+    design = files[".github/skills/agent-org-design/SKILL.md"].replace(b"\r\n", b"\n")
+    assert b"](..\\..\\agent-org\\org.schema.json)" in design
+    assert b"](..\\..\\agent-org\\tools\\README.md)" in design
+    assert not any("/bootstrap/" in name for name in files)
     assert {name for name in files if name.startswith(".github/agent-org/loops/")} == {
         ".github/agent-org/loops/leaf.md", ".github/agent-org/loops/parent.md"
     }
@@ -364,6 +387,7 @@ def test_local_overlay_does_not_hide_other_github_files(repo):
         ".github/agents/human.md",
         ".github/extensions/other/extension.mjs",
         ".github/instructions/team.instructions.md",
+        ".github/skills/human-tool/SKILL.md",
     )
     for relative in unrelated:
         write(repo.joinpath(*relative.split("/")), "human-owned\n")
@@ -378,6 +402,7 @@ def test_local_overlay_does_not_hide_other_github_files(repo):
     ".github/agents/main.md",
     ".github/hooks/agent-org.json",
     ".github/instructions/agent-org.instructions.md",
+    ".github/skills/agent-org-design/SKILL.md",
     "org.json",
 ])
 def test_conflicts_are_detected_before_any_writes(repo, relative):

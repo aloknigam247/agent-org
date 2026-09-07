@@ -46,7 +46,7 @@ bootstrap command rejects conflicting selections. Local mode cannot hide files t
    ```
 
    This preflights all destination collisions, preserves matching files, and reports `created` versus `existing`.
-   Generated definitions and copied skills follow the [invocation policy](..\agent-org-design\SKILL.md#21-nodes-and-roles).
+   Generated definitions and installed operational skills follow the invocation policy in `agent-org-design`.
    Stop on a conflict; never overwrite a file, hand-edit the live tree to force a pass, or stage unrelated work.
    No Git initialization, commit, package install, or global Git/Copilot configuration change is performed.
 
@@ -63,20 +63,22 @@ bootstrap command rejects conflicting selections. Local mode cannot hide files t
    ```
 
 4. Report the chosen configuration, created/existing files, exclude-file location, and actual validation result.
-   Surface coverage failures without silently reassigning paths. Reload the session to discover the installed
-   agents, hooks, and extension; verify their behavior rather than claiming they intercept every kind of write.
-   Before the first task, follow the [worktree prerequisites](..\..\tools\README.md#session-worktree).
+   Surface coverage failures without silently reassigning paths. Request `/skills reload` to discover skills added
+   during this session, and do not claim they are registered before that refresh. Start a new session to load the
+   installed agents, hooks, and extension; verify their behavior rather than claiming they intercept every kind of
+   write. Before the first task, follow the [worktree prerequisites](..\..\tools\README.md#session-worktree).
 
 ## Installed layout
 
 | Target path | Contents |
 | --- | --- |
 | `org.json` | Mutable target configuration and live tree |
-| `.github\agent-org\` | Runtime tools, self-contained Parent/Leaf loops, schema, seed, template, and on-demand skills |
+| `.github\agent-org\` | Runtime tools, self-contained Parent/Leaf loops, schema, seed, and template |
 | `.github\agents\` | Definitions for live nodes and `splitter`; unrelated agents are preserved |
 | `.github\extensions\agent-org\` | Extension and its runtime helper modules |
 | `.github\hooks\agent-org.json` | Copy of the canonical plugin hooks |
 | `.github\instructions\` | Base policy plus only the selected scope and collaboration profiles |
+| `.github\skills\` | Operational `agent-org-design` and `agent-org-wiki-curate` skills; unrelated skills are preserved |
 
 The renderer always copies `agent-org.instructions.md`, then selects `agent-org.scope-full.instructions.md`
 for scope `["**"]` or `agent-org.scope-partial.instructions.md` otherwise. The `collaboration` choice selects
@@ -86,6 +88,7 @@ Local mode adds exact owned files to the real Git common directory's `info\exclu
 is a linked-worktree file. It does not hide whole shared agent or instruction directories. Tracked mode adds
 no overlay exclusions. Both modes exclude runtime worktrees and caches; neither changes the index.
 
-The installed bootstrap can reuse its copied seed, template, tools, and **selected** profiles, including
-rendering new nodes after a split. To bootstrap with a different profile selection, use the original plugin's
-bootstrap skill. Unselected profiles and evaluation code are not copied into targets.
+The installed bootstrap tooling can reuse its copied seed, template, tools, operational skills, and **selected**
+profiles, including rendering new nodes after a split. It does not depend on a copied bootstrap SKILL.md. To
+bootstrap with a different profile selection, use the original plugin's bootstrap skill. Unselected profiles and
+evaluation code are not copied into targets.

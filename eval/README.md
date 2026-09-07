@@ -1,7 +1,8 @@
 # agent-org evaluations
 
 The runtime lives in `plugin/`. This directory and `tests/` are development-only; neither is installed in target repos.
-`bundle_validator.py` checks bundle metadata and freshness for preflight and grading, not at runtime.
+`bundle_validator.py` checks wiki/tool namespaces and charter-owned node skills under `.github\skills` for bundle
+metadata and freshness during preflight and grading, not at runtime. Unrelated repository skills are ignored.
 
 ## Deterministic tests
 

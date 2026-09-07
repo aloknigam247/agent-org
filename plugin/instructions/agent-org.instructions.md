@@ -27,4 +27,5 @@ Handle kernel governance only when the human explicitly requests it. After boots
 apply an approved organization change. Present each SplitProposal via `ask_user` for approve / edit / reject;
 on approval, invoke `splitter` with the root's existing session worktree and the approved proposal.
 
-Consult `.github\agent-org\skills\agent-org-design\SKILL.md` only when a design question requires it.
+Invoke `agent-org-design` through the native skill tool when a design question requires it. Do not read SKILL.md
+as a substitute for skill invocation. If it was installed during this session, request `/skills reload` first.

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -13,8 +14,10 @@ import bundle_validator as bv  # noqa: E402
 
 ORG = {"version": 3, "root": "root", "nodes": [
     {"id": "root", "charter": {"domain": ["shared/**"]}, "parent": None, "children": ["a", "b"], "mode": "Parent"},
-    {"id": "a", "charter": {"domain": ["a/**"]}, "parent": "root", "children": [], "mode": "Leaf"},
-    {"id": "b", "charter": {"domain": ["b/**"]}, "parent": "root", "children": [], "mode": "Leaf"}]}
+    {"id": "a", "charter": {"domain": ["a/**", ".github/skills/agent-org-a-*/**"]},
+     "parent": "root", "children": [], "mode": "Leaf"},
+    {"id": "b", "charter": {"domain": ["b/**", ".github/skills/agent-org-b-*/**"]},
+     "parent": "root", "children": [], "mode": "Leaf"}]}
 
 
 @pytest.fixture
@@ -37,6 +40,11 @@ def test_front_matter_scalar_and_lists():
 
 def test_valid_bundle_passes(repo):
     r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            "---\nname: agent-org-a-refresh\nowner: a\nsources: [a/x.py]\n"
+            "user-invocable: false\n---\nsteps"
+        ),
+        ".github/skills/agent-org-a-refresh/examples/sample.md": "example",
         "wiki/a/notes.md": "---\nowner: a\nsources: [a/x.py]\n---\nnotes",
         "a/x.py": "y",
         "tools/b/run.py": "print(1)"}))
@@ -52,6 +60,178 @@ def test_so2_missing_agent_def_fails(repo):
 def test_so6_orphan_namespace_fails(repo):
     r = bv.check_bundle(ORG, repo({"wiki/ghost/page.md": "x"}))  # 'ghost' is not a live node
     assert any("orphan" in e for e in evidences(r)), r
+
+
+def test_standard_skill_orphan_fails(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-ghost-refresh/SKILL.md": (
+            "---\nname: agent-org-ghost-refresh\nowner: ghost\nuser-invocable: false\n---\n"
+        ),
+    }))
+    assert any("orphan" in e for e in evidences(r)), r
+
+
+def test_unrelated_standard_skill_is_not_an_agent_org_bundle(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/human-release/SKILL.md": "---\nname: human-release\nowner: person\n---\n",
+    }))
+    assert r["status"] == "ok", r
+
+
+def test_operational_skills_are_not_node_owned_bundles(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-design/SKILL.md": "---\nname: agent-org-design\n---\n",
+        ".github/skills/agent-org-wiki-curate/SKILL.md": "---\nname: agent-org-wiki-curate\n---\n",
+    }))
+    assert r["status"] == "ok", r
+
+
+def test_skill_charters_disambiguate_prefix_node_ids(file_tree):
+    prefix_org = {"version": 1, "root": "a", "nodes": [
+        {"id": "a", "charter": {
+            "domain": ["a/**", ".github/skills/agent-org-a-*/**"],
+            "excludes": [".github/skills/agent-org-a-b-*/**"],
+        }, "parent": None, "children": ["a-b", "other"], "mode": "Parent"},
+        {"id": "a-b", "charter": {
+            "domain": ["a-b/**", ".github/skills/agent-org-a-b-*/**"],
+        }, "parent": "a", "children": [], "mode": "Leaf"},
+        {"id": "other", "charter": {"domain": ["other/**"]}, "parent": "a", "children": [], "mode": "Leaf"},
+    ]}
+    root = file_tree({
+        ".github/agents/a.md": "# a",
+        ".github/agents/a-b.md": "# a-b",
+        ".github/agents/other.md": "# other",
+        ".github/skills/agent-org-a-b-refresh/SKILL.md": (
+            "---\nname: agent-org-a-b-refresh\nowner: a-b\nuser-invocable: false\n---\n"
+        ),
+    })
+    assert bv.check_bundle(prefix_org, root)["status"] == "ok"
+
+
+def test_skill_owner_metadata_cannot_override_charter_owner(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            "---\nname: agent-org-a-refresh\nowner: b\nuser-invocable: false\n---\n"
+        ),
+    }))
+    assert any("owner 'b' != charter owner 'a'" in e for e in evidences(r)), r
+
+
+def test_quoted_native_skill_metadata_is_parsed_as_yaml(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            '---\nname: "agent-org-a-refresh"\nowner: "a"\nsources: ["a/x.py"]\n'
+            'disable-model-invocation: false\nuser-invocable: false\n---\nsteps'
+        ),
+        "a/x.py": "y",
+    }))
+    assert r["status"] == "ok", r
+
+
+def test_primary_skill_dangling_source_fails(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            '---\nname: "agent-org-a-refresh"\nowner: "a"\nsources: ["a/missing.py"]\n'
+            "user-invocable: false\n---\nsteps"
+        ),
+    }))
+    assert any("dangling source 'a/missing.py'" in e for e in evidences(r)), r
+    assert sum("owner" in e for e in evidences(r)) == 0
+
+
+def test_skill_folder_and_metadata_name_must_match(repo):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            "---\nname: agent-org-a-other\nowner: a\nuser-invocable: false\n---\n"
+        ),
+    }))
+    assert any("skill name" in e for e in evidences(r)), r
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        'disable-model-invocation: "false"\nuser-invocable: false',
+        "disable-model-invocation: 0\nuser-invocable: false",
+        "disable-model-invocation: true\nuser-invocable: false",
+        'user-invocable: "false"',
+        "user-invocable: 0",
+        "user-invocable: true",
+    ],
+)
+def test_node_skills_are_internal_but_model_invocable(repo, field):
+    r = bv.check_bundle(ORG, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            f"---\nname: agent-org-a-refresh\nowner: a\n{field}\n---\n"
+        ),
+    }))
+    assert any("invoc" in e for e in evidences(r)), r
+
+
+@pytest.mark.parametrize("ownership", ["other", "overlap", "uncovered"])
+def test_skill_companions_require_matching_charter_ownership(repo, ownership):
+    companion = ".github/skills/agent-org-a-refresh/scripts/run.py"
+    org = copy.deepcopy(ORG)
+    if ownership != "overlap":
+        org["nodes"][1]["charter"]["excludes"] = [companion]
+    if ownership != "uncovered":
+        org["nodes"][2]["charter"]["domain"].append(companion)
+    r = bv.check_bundle(org, repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            "---\nname: agent-org-a-refresh\nowner: a\nuser-invocable: false\n---\n"
+        ),
+        companion: "print(1)",
+    }))
+    assert any("charter ownership" in e for e in evidences(r)), r
+
+
+def test_partial_scope_node_skill_uses_explicit_charter_grant(file_tree):
+    skill = ".github/skills/agent-org-a-refresh"
+    companion = f"{skill}/scripts/run.py"
+    partial_org = {
+        "version": 1,
+        "root": "root",
+        "scope": ["src/**"],
+        "nodes": [
+            {
+                "id": "root",
+                "charter": {"domain": ["shared/**"]},
+                "parent": None,
+                "children": ["a"],
+                "mode": "Parent",
+            },
+            {
+                "id": "a",
+                "charter": {"domain": ["src/a/**", f"{skill}/**"]},
+                "parent": "root",
+                "children": [],
+                "mode": "Leaf",
+            },
+        ],
+    }
+
+    def tree(owner="a"):
+        return file_tree({
+            ".github/agents/a.md": "# a",
+            ".github/agents/root.md": "# root",
+            f"{skill}/SKILL.md": (
+                f"---\nname: agent-org-a-refresh\nowner: {owner}\nsources: [src/a/x.py]\n"
+                "user-invocable: false\n---\n"
+            ),
+            companion: "print(1)",
+            "src/a/x.py": "x",
+        })
+
+    assert bv.check_bundle(partial_org, tree())["status"] == "ok"
+
+    metadata_mismatch = bv.check_bundle(partial_org, tree(owner="root"))
+    assert any("owner 'root' != charter owner 'a'" in e for e in evidences(metadata_mismatch))
+
+    companion_org = copy.deepcopy(partial_org)
+    companion_org["nodes"][1]["charter"]["excludes"] = [companion]
+    companion_org["nodes"][0]["charter"]["domain"].append(companion)
+    companion_mismatch = bv.check_bundle(companion_org, tree())
+    assert any("charter ownership ['root'] != owning skill 'a'" in e for e in evidences(companion_mismatch))
 
 
 def test_so3_owner_namespace_mismatch_fails(repo):
@@ -84,3 +264,28 @@ def test_freshness_ok_when_source_unchanged(repo):
     d = repo({"wiki/a/notes.md": "---\nowner: a\nsources: [a/x.py]\n---\nnotes", "a/x.py": "y"})
     r = bv.check_freshness(d, ["b/unrelated.py"])  # nothing the artifact depends on changed
     assert r["status"] == "ok", r
+
+
+def test_standard_skill_freshness_uses_skill_metadata(repo):
+    skill = ".github/skills/agent-org-a-refresh/SKILL.md"
+    d = repo({
+        skill: "---\nname: agent-org-a-refresh\nowner: a\nsources: [a/x.py]\n---\nsteps",
+        "a/x.py": "y",
+    })
+    stale = bv.check_freshness(d, ["a/x.py"])
+    assert any("not re-touched" in e for e in evidences(stale)), stale
+    assert bv.check_freshness(d, ["a/x.py", skill])["status"] == "ok"
+
+
+@pytest.mark.parametrize("sources", ["[null]", "[1]", "{path: a/x.py}"])
+def test_node_skill_malformed_sources_are_violations(repo, sources):
+    d = repo({
+        ".github/skills/agent-org-a-refresh/SKILL.md": (
+            f"---\nname: agent-org-a-refresh\nowner: a\nsources: {sources}\n"
+            "user-invocable: false\n---\n"
+        ),
+    })
+    bundle = bv.check_bundle(ORG, d)
+    freshness = bv.check_freshness(d, ["a/x.py"])
+    assert any("sources must be a list of non-empty path strings" in e for e in evidences(bundle)), bundle
+    assert any("sources must be a list of non-empty path strings" in e for e in evidences(freshness)), freshness
