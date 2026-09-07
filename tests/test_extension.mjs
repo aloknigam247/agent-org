@@ -25,6 +25,84 @@ test("parallel child sessions retain distinct actors in one shared workspace", a
   assert.ok(calls.every(({ input }) => input.agentOrgContext.run_id === "root-session"));
 });
 
+test("sub-agent hooks attribute the executing child session, not the registering parent", async () => {
+  const seen = [];
+  const runtime = createRuntime(async (event, input) => {
+    seen.push({ event, input });
+    return input.agentOrgContext?.node === "main" ? { permissionDecision: "deny" } : {};
+  });
+  // The parent binds itself: input and invocation carry the same parent runtime session id.
+  await runtime.hooks.onUserPromptSubmitted(
+    { sessionId: "parent", cwd: "D:\\wt", prompt: "AgentOrgActingNode: main\nAgentOrgRunId: root\nAgentOrgWorktree: D:\\wt" },
+    { sessionId: "parent" },
+  );
+  // Inherited child prompts arrive with the child runtime session in input and the parent in invocation.
+  for (const [child, node] of [["child-kernel", "kernel"], ["child-eval", "eval"]]) {
+    await runtime.hooks.onUserPromptSubmitted(
+      { sessionId: child, cwd: "D:\\wt",
+        prompt: `AgentOrgActingNode: ${node}\nAgentOrgRunId: root\nAgentOrgWorktree: D:\\wt\nParentAgentSessionId: parent` },
+      { sessionId: "parent" },
+    );
+  }
+  const tool = { toolName: "create", toolArgs: { path: "x\\data.txt" }, cwd: "D:\\wt" };
+  for (const [child, node] of [["child-kernel", "kernel"], ["child-eval", "eval"]]) {
+    const pre = await runtime.hooks.onPreToolUse({ ...tool, sessionId: child }, { sessionId: "parent" });
+    const post = await runtime.hooks.onPostToolUse({ ...tool, sessionId: child }, { sessionId: "parent" });
+    assert.deepEqual(pre, {});
+    assert.deepEqual(post, {});
+    for (const event of ["preToolUse", "postToolUse"]) {
+      const forwarded = seen.find((s) => s.event === event && s.input.agentOrgContext?.node === node);
+      assert.equal(forwarded.input.sessionId, child);
+      assert.deepEqual(forwarded.input.agentOrgContext,
+        { node, run_id: "root", worktree: "D:\\wt", parent_session_id: "parent" });
+    }
+  }
+  const parentPre = await runtime.hooks.onPreToolUse({ ...tool, sessionId: "parent" }, { sessionId: "parent" });
+  const parentPost = await runtime.hooks.onPostToolUse({ ...tool, sessionId: "parent" }, { sessionId: "parent" });
+  assert.equal(parentPre.permissionDecision, "deny");
+  assert.equal(parentPost.permissionDecision, "deny");
+  for (const event of ["preToolUse", "postToolUse"]) {
+    const parentCtx = seen.find((s) => s.event === event && s.input.agentOrgContext?.node === "main");
+    assert.equal(parentCtx.input.sessionId, "parent");
+    assert.equal(parentCtx.input.agentOrgContext.parent_session_id, undefined);
+  }
+});
+
+test("ending a child session leaves the parent and siblings bound", async () => {
+  const seen = [];
+  const runtime = createRuntime(async (_event, input) => { seen.push(input.agentOrgContext?.node); return {}; });
+  await runtime.hooks.onUserPromptSubmitted(
+    { sessionId: "parent", cwd: "D:\\wt", prompt: "AgentOrgActingNode: main\nAgentOrgRunId: root\nAgentOrgWorktree: D:\\wt" },
+    { sessionId: "parent" },
+  );
+  for (const [child, node] of [["child-kernel", "kernel"], ["child-eval", "eval"]]) {
+    await runtime.hooks.onUserPromptSubmitted(
+      { sessionId: child, cwd: "D:\\wt",
+        prompt: `AgentOrgActingNode: ${node}\nAgentOrgRunId: root\nAgentOrgWorktree: D:\\wt\nParentAgentSessionId: parent` },
+      { sessionId: "parent" },
+    );
+  }
+  await runtime.hooks.onSessionEnd({ sessionId: "child-kernel", cwd: "D:\\wt" }, { sessionId: "parent" });
+  const tool = { toolName: "view", cwd: "D:\\wt" };
+  await runtime.hooks.onPreToolUse({ ...tool, sessionId: "child-kernel" }, { sessionId: "parent" });
+  await runtime.hooks.onPreToolUse({ ...tool, sessionId: "child-eval" }, { sessionId: "parent" });
+  await runtime.hooks.onPreToolUse({ ...tool, sessionId: "parent" }, { sessionId: "parent" });
+  assert.deepEqual(seen.slice(-3), [undefined, "eval", "main"]);
+});
+
+test("hooks fall back to the invocation session when input omits a session id", async () => {
+  let ctx;
+  const runtime = createRuntime(async (_event, input) => { ctx = input.agentOrgContext; return {}; });
+  await runtime.hooks.onUserPromptSubmitted(
+    { cwd: "D:\\wt", prompt: "AgentOrgActingNode: stock" }, { sessionId: "solo" },
+  );
+  await runtime.hooks.onPreToolUse({ toolName: "create", cwd: "D:\\wt" }, { sessionId: "solo" });
+  assert.equal(ctx.node, "stock");
+  await runtime.hooks.onSessionEnd({ cwd: "D:\\wt" }, { sessionId: "solo" });
+  await runtime.hooks.onPreToolUse({ toolName: "view", cwd: "D:\\wt" }, { sessionId: "solo" });
+  assert.equal(ctx, undefined);
+});
+
 test("quoted marker text is not an identity and a session cannot change identity", async () => {
   let captured;
   const runtime = createRuntime(async (_event, input) => { captured = input; return {}; });
