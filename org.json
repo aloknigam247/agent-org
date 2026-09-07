@@ -1,21 +1,66 @@
 {
-  "version": 3,
+  "version": 4,
   "root": "main",
   "nodes": [
     {
       "id": "main",
       "parent": null,
+      "children": [
+        "eval",
+        "kernel"
+      ],
+      "mode": "Parent",
+      "charter": {
+        "domain": [
+          "/.gitignore",
+          "/AGENTS.md",
+          "/conftest.py",
+          "/org.json",
+          "/pytest.ini",
+          "/README.md"
+        ],
+        "concerns": [
+          "repository-wide configuration and documentation"
+        ],
+        "excludes": []
+      }
+    },
+    {
+      "id": "eval",
+      "parent": "main",
       "children": [],
       "mode": "Leaf",
       "charter": {
         "domain": [
-          "**"
+          "eval/**",
+          "tests/test_bundle_validator.py"
         ],
         "concerns": [
-          "owns the configured scope until the first split",
-          "does all work directly; proposes a gated split when overloaded"
+          "evaluation harness, fixtures, graders, and bundle validation",
+          "tests of the evaluation bundle validator"
         ],
         "excludes": []
+      }
+    },
+    {
+      "id": "kernel",
+      "parent": "main",
+      "children": [],
+      "mode": "Leaf",
+      "charter": {
+        "domain": [
+          ".github/**",
+          "plugin/**",
+          "tests/**"
+        ],
+        "concerns": [
+          "generated installation overlay kept consistent with the plugin source",
+          "installable plugin runtime, loops, schema, and operational definitions",
+          "tests of plugin and runtime behavior"
+        ],
+        "excludes": [
+          "tests/test_bundle_validator.py"
+        ]
       }
     }
   ],

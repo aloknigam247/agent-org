@@ -557,6 +557,10 @@ def foreign_records(root, session_id=None):
 
 def _task_context(payload, org, context):
     args = payload.get("toolArgs") or {}
+    if isinstance(args, str):
+        args = json.loads(args)
+    if not isinstance(args, dict):
+        raise ValueError("task arguments must be an object")
     target = args.get("agent_type")
     nodes = {n["id"]: n for n in org["nodes"]}
     if target not in nodes.keys() | {"splitter"}:
