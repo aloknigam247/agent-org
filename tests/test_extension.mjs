@@ -1,7 +1,54 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { createRuntime } from "../plugin/extensions/agent-org/runtime.mjs";
 import { createRuntime as createProjectRuntime } from "../.github/extensions/agent-org/runtime.mjs";
+import { createOracle, findOracle } from "../plugin/extensions/agent-org/oracle.mjs";
+import { createOracle as createProjectOracle, findOracle as findProjectOracle } from "../.github/extensions/agent-org/oracle.mjs";
+
+for (const [provider, makeOracle, find, tools] of [
+  ["plugin", createOracle, findOracle, new URL("../plugin/tools/", import.meta.url)],
+  ["project", createProjectOracle, findProjectOracle, new URL("../.github/agent-org/tools/", import.meta.url)],
+]) {
+  test(`${provider} oracle discovers only installed runtime and fails closed without canonical config`, async (t) => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "agent-org-oracle-"));
+    t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+    execFileSync("git", ["init", "-q", repo], { stdio: "pipe", windowsHide: true });
+    const org = { version: 1, root: "coordinator", nodes: [
+      { id: "coordinator", parent: null, children: [], mode: "Leaf", charter: { domain: ["**"] } },
+    ] };
+    fs.writeFileSync(path.join(repo, "org.json"), JSON.stringify(org));
+    assert.equal(find(repo), undefined);
+    const oracle = makeOracle();
+    const payload = { cwd: repo, toolName: "create", toolArgs: { path: "src/new.txt" } };
+    assert.deepEqual(await oracle("preToolUse", payload), {});
+    const installed = path.join(repo, ".github", "agent-org");
+    fs.mkdirSync(installed, { recursive: true });
+    assert.throws(() => find(repo), /missing installed owner oracle/);
+    const toolDir = path.join(installed, "tools");
+    fs.mkdirSync(toolDir);
+    for (const name of ["owner_validator.py", "org_config.py"]) {
+      fs.copyFileSync(new URL(name, tools), path.join(toolDir, name));
+    }
+    assert.equal(fs.realpathSync.native(find(repo).directory), fs.realpathSync.native(repo));
+    const canonical = path.join(installed, "org.json");
+    fs.writeFileSync(canonical, JSON.stringify(org));
+    const rootCheck = await oracle("rootSplitCheck", { cwd: repo, node: "coordinator" });
+    assert.equal(rootCheck.is_root, true);
+    assert.equal(rootCheck.recommend_split, false);
+    const guarded = await oracle("preToolUse", payload);
+    assert.equal(guarded.permissionDecision, "deny");
+    assert.match(guarded.permissionDecisionReason, /identity/);
+    fs.unlinkSync(canonical);
+    const incomplete = await oracle("preToolUse", payload);
+    assert.equal(incomplete.permissionDecision, "deny");
+    assert.match(incomplete.permissionDecisionReason, /configuration audit failed/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(repo, "org.json"), "utf8")), org);
+  });
+}
 
 function makeOracle(advice) {
   return async (event, input) => {

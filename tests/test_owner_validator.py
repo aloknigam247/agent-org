@@ -396,6 +396,22 @@ def test_cli_owner_exit_codes(git_repo):
     assert unowned.returncode == 1, unowned.stdout  # a path no node owns exits non-zero
 
 
+def test_cli_uses_canonical_config_and_only_selects_explicit_candidates(git_repo):
+    canonical = org("canonical", [node("canonical", ["**"], mode="Leaf")])
+    candidate = org("candidate", [node("candidate", ["**"], mode="Leaf")])
+    repo = git_repo({"a/x.txt": "1", "org.json": "{not live configuration"}, canonical)
+    proposal = repo / "candidate.json"
+    proposal.write_text(json.dumps(candidate), encoding="utf-8")
+    for options, expected in (([], "canonical"), (["--org", str(proposal)], "candidate")):
+        result = subprocess.run(
+            [sys.executable, str(TOOL), "--root", str(repo), "--owner", "a/x.txt", *options],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout)["owner"] == expected
+    assert json.loads((repo / ov.ORG_PATH).read_text(encoding="utf-8")) == canonical
+
+
 # --- split-transition validator (design §2.3, §3.6) -------------------------------------------------
 
 def _root_split():
@@ -408,8 +424,10 @@ def _root_split():
     return old, new
 
 
-def test_split_valid_root_split():
+@pytest.mark.parametrize("version", [-10, 0, 1, 3, 4, 5, 100])
+def test_split_valid_root_split(version):
     old, new = _root_split()
+    old["version"], new["version"] = version, version + 1
     r = ov.check_split(old, new, ["a/x", "b/y", "root.txt"])
     assert r["status"] == "ok", r
 
@@ -583,6 +601,31 @@ def test_hook_cli_allows_when_no_org(tmp_path):
     p = subprocess.run([sys.executable, str(TOOL), "--hook"],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout) == {}, p.stdout
+
+
+def test_hook_does_not_treat_an_unrelated_root_file_as_an_installation(tmp_path):
+    (tmp_path / "org.json").write_text(json.dumps(_HOOK_ORG), encoding="utf-8")
+    call = _payload("create", str(tmp_path / "a/new.txt"), str(tmp_path), sid="uninstalled")
+    assert ov.process_hook(call) == {}
+    assert ov.record_acting({
+        "cwd": str(tmp_path), "sessionId": "uninstalled", "prompt": "AgentOrgActingNode: a",
+    }) is None
+
+
+@pytest.mark.parametrize("content", [None, "{"])
+def test_incomplete_installation_fails_closed_without_using_other_config(git_repo, content):
+    repo = git_repo({"a/x.txt": "1", "org.json": json.dumps(_HOOK_ORG)}, _HOOK_ORG)
+    canonical = repo / ov.ORG_PATH
+    if content is None:
+        canonical.unlink()
+    else:
+        canonical.write_text(content, encoding="utf-8")
+    call = _payload("create", str(repo / "a/new.txt"), str(repo))
+    decision = ov.process_hook(call)
+    assert decision["permissionDecision"] == "deny"
+    assert "configuration audit failed" in decision["permissionDecisionReason"]
+    warning = ov.process_hook(call, after=True)
+    assert "configuration audit failed" in warning["additionalContext"]
 
 
 # --- usage log + split-advice (parent's over-burden signal) -----------------------------------------

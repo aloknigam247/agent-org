@@ -10,8 +10,7 @@ A fixture is a directory `eval/fixtures/<case>/` with:
   - `manifest.yml` — the case definition (see eval/README.md).
   - `seed/`        — independent fixture setup: `.github/agent-org/org.json` + repo-root domain files.
                      The runner generates agents from that fixture org and materializes the plugin's
-                     instructions, schema, and runtime (reproducing a bootstrapped repo). This setup
-                     directory is not an installed runtime seed or a duplicate live organization.
+                     instructions, schema, and runtime (reproducing a bootstrapped repo).
 
 Auth: the harness's Copilot subprocess cannot use the parent session's Entra auth, so it sets
 `COPILOT_GITHUB_TOKEN` from `gh auth token` (the local GitHub login).
@@ -56,19 +55,13 @@ def sh(args, cwd=None, env=None, timeout=None):
 
 
 def _read_org(root: Path):
-    """Read the installed organization only; never infer a root-level legacy fallback."""
+    """Read the installed organization at its canonical repository-relative path."""
     path = bv.org_config.config_path(root, explicit=ORG_PATH)
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _fixture_org(fixture: Path):
-    seed = fixture / "seed"
-    if (seed / "org.json").exists():
-        raise ValueError(
-            f"legacy seed/org.json is not an installed fixture layout; use seed/{ORG_PATH.as_posix()} "
-            "only, and exercise explicit bootstrap migration in a separate legacy setup"
-        )
-    return _read_org(seed)
+    return _read_org(fixture / "seed")
 
 
 def build_sandbox(fixture: Path, dest: Path, prepare=None):

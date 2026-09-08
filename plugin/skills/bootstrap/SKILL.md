@@ -6,10 +6,10 @@ user-invocable: true
 
 # Bootstrap agent-org
 
-Use Windows and PowerShell. Configuration fields and legacy defaults are defined in
+Use Windows and PowerShell. Configuration fields and defaults are defined in
 [`org.schema.json`](..\..\org.schema.json). Stable defaults in `bootstrap.default_org()` initialize each target
-directly at `.github/agent-org/org.json`; no plugin or installed org seed is used. Ownership globs are always
-repository-root-relative, not config-directory-relative.
+directly at `.github/agent-org/org.json`. The version starts at 3 and is a per-org evolution counter, not a
+file-layout version. Ownership globs are always repository-root-relative, not config-directory-relative.
 
 ## Ask before installing
 
@@ -27,12 +27,7 @@ whereas a missing owner inside scope remains a coverage problem. For hybrid coll
 reports changes and owners; it does not automatically reassign ownership.
 
 If `.github/agent-org/org.json` exists, read its configuration and present those choices instead of resetting
-the tree. If only legacy root `org.json` exists, obtain explicit migration approval and use `--migrate-legacy`;
-the move preserves the live bytes, including topology, roles, version, settings and omitted legacy fields.
-If both live candidates exist, stop without selecting, reseeding or synchronizing either one, even if one is
-malformed or their contents match. Local mode cannot hide files that Git already tracks.
-This repository's approved v4 -> v5 governance relocation is splitter-only: follow its ConfigRelocation
-procedure rather than invoking bootstrap on its live source or shared worktree.
+the tree. Only that canonical path is live configuration. Local mode cannot hide files that Git already tracks.
 
 ## Install
 
@@ -55,10 +50,7 @@ procedure rather than invoking bootstrap on its live source or shared worktree.
    Generated definitions and installed operational skills follow the invocation policy in `agent-org-design`.
    Stop on a conflict; never overwrite a file, hand-edit the live tree to force a pass, or stage unrelated work.
    No Git initialization, commit, package install, or global Git/Copilot configuration change is performed.
-   Only for an explicitly approved, unambiguous legacy bootstrap migration, append `--migrate-legacy`.
-   A known default installed legacy seed is removed after successful preflight; a non-default seed is a
-   collision and is preserved. Differing existing runtime files also remain a conflict, not permission to
-   overwrite target-specific state. Stage reviewed runtime updates separately before retrying migration.
+   Differing existing runtime files remain a conflict, not permission to overwrite target-specific state.
 
 3. Validate the installed tree:
 
@@ -83,7 +75,7 @@ procedure rather than invoking bootstrap on its live source or shared worktree.
 | Target path | Contents |
 | --- | --- |
 | `.github\agent-org\org.json` | The sole mutable target configuration and live tree |
-| `.github\agent-org\` | Runtime tools, self-contained Parent/Leaf loops, schema, and template; no seed |
+| `.github\agent-org\` | Runtime tools, self-contained Parent/Leaf loops, schema, and template |
 | `.github\agents\` | Definitions for live nodes and `splitter`; unrelated agents are preserved |
 | `.github\extensions\agent-org\` | Extension and its runtime helper modules |
 | `.github\hooks\agent-org.json` | Copy of the canonical plugin hooks |

@@ -9,8 +9,7 @@
   "properties": {
     "version": {
       "type": "integer",
-      "minimum": 3,
-      "description": "Org-state version. Bumped by exactly one on every applied split or the explicitly approved v4 -> v5 ConfigRelocation."
+      "description": "Per-org evolution counter, not a file-layout version. Bumped by exactly one on every applied split."
     },
     "root": {
       "type": "string",

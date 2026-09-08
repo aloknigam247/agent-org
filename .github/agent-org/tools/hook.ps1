@@ -16,6 +16,5 @@ $payload = [Console]::In.ReadToEnd()
 if ($env:AGENT_ORG_HOOK_MODE) {
     $options += @("--mode", $env:AGENT_ORG_HOOK_MODE)
 }
-$options += @("--provider-hook", $PSCommandPath)
 $payload | python -X utf8 (Join-Path $PSScriptRoot "owner_validator.py") @options
 exit $LASTEXITCODE

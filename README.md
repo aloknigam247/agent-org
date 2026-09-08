@@ -19,14 +19,11 @@ stage changes, or modify global settings.
 
 Follow the [bootstrap skill](plugin\skills\bootstrap\SKILL.md) for the complete setup procedure and installed
 layout. Bootstrap installs operational skills in `.github\skills`; run `/skills reload` before invoking skills
-added during the current session. Configuration and compatibility defaults are defined in the
+added during the current session. Configuration defaults are defined in the
 [schema](plugin\org.schema.json).
 
-The only installed organization file is `.github\agent-org\org.json`. Fresh bootstrap initializes it
-directly, without installing an organization seed copy. An explicit bootstrap migration preserves an
-unambiguous legacy root `org.json`; if both live paths exist, bootstrap reports a conflict rather than
-choosing or reseeding. Normal runtime discovery uses only the canonical installed path. Configuration paths
-and ownership globs remain repository-root-relative, not relative to the config directory.
+Bootstrap initializes `.github\agent-org\org.json`, the only path used for runtime configuration discovery.
+Ownership globs remain repository-root-relative, not relative to the config directory.
 
 ## Use
 
@@ -45,8 +42,7 @@ written rules must be distinguished from verified behavior in the actual Copilot
 
 ## Repository
 
-- `plugin\` is the installable kernel. Bootstrap defines stable defaults; each target owns its live
-  `.github\agent-org\org.json` rather than sharing or retaining a seed organization.
+- `plugin\` is the installable kernel.
 - `eval\` and `tests\` contain development validation, including the evaluation-only bundle validator.
 
 See the [evaluation guide](eval\README.md) and [test plan](eval\TEST-PLAN.md) for verification scope.

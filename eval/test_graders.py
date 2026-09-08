@@ -276,18 +276,21 @@ _GOOD_ORG = {"version": 3, "root": "main", "nodes": [
 
 @pytest.fixture
 def _fixture(file_tree):
-    return lambda org, extra_seed=None, org_path=run.ORG_PATH.as_posix(): file_tree({
-        f"seed/{org_path}": json.dumps(org),
+    return lambda org, extra_seed=None: file_tree({
+        f"seed/{run.ORG_PATH.as_posix()}": json.dumps(org),
         **{f"seed/{rel}": content for rel, content in (extra_seed or {}).items()},
     })
 
 
-def test_preflight_accepts_valid_fixture(_fixture):
-    assert run.preflight(_fixture(_GOOD_ORG), {"id": "t", "agent": "main"}) == []
+@pytest.mark.parametrize("version", [-1, 0, 1, 3, 5, 42])
+def test_preflight_accepts_integer_evolution_counter(_fixture, version):
+    org = {**_GOOD_ORG, "version": version}
+    assert run.preflight(_fixture(org), {"id": "t", "agent": "main"}) == []
 
 
-def test_preflight_rejects_bad_schema_version(_fixture):
-    probs = run.preflight(_fixture({**_GOOD_ORG, "version": 1}), {"id": "t", "agent": "main"})
+@pytest.mark.parametrize("version", [None, True, False, "3", 1.5])
+def test_preflight_rejects_noninteger_version(_fixture, version):
+    probs = run.preflight(_fixture({**_GOOD_ORG, "version": version}), {"id": "t", "agent": "main"})
     assert any("schema" in p for p in probs), probs
 
 
@@ -304,17 +307,25 @@ def test_preflight_rejects_baseline_coverage_gap(_fixture):
     assert any("coverage" in p for p in probs), probs
 
 
-@pytest.mark.parametrize("canonical_present", [False, True], ids=["legacy-only", "conflicting-live-files"])
-def test_preflight_does_not_implicitly_migrate_legacy_fixtures(_fixture, canonical_present):
-    # Intentionally retain a root config to model legacy setup, not a second installed organization.
-    extra = {run.ORG_PATH.as_posix(): json.dumps(_GOOD_ORG)} if canonical_present else {}
-    fixture = _fixture(_GOOD_ORG, extra, org_path="org.json")
-    legacy = fixture / "seed" / "org.json"
-    before = legacy.read_bytes()
-    problems = run.preflight(fixture, {"id": "legacy-layout", "agent": "main"})
-    assert any("legacy seed/org.json" in problem for problem in problems), problems
-    assert legacy.read_bytes() == before
-    assert (fixture / "seed" / run.ORG_PATH).exists() is canonical_present
+@pytest.mark.parametrize("canonical_state", ["missing", "malformed"])
+def test_preflight_requires_readable_canonical_org(_fixture, canonical_state):
+    fixture = _fixture(_GOOD_ORG)
+    canonical = fixture / "seed" / run.ORG_PATH
+    if canonical_state == "missing":
+        canonical.unlink()
+    else:
+        canonical.write_text("{invalid", encoding="utf-8")
+    problems = run.preflight(fixture, {"id": "canonical-layout", "agent": "main"})
+    assert any("fixture organization unreadable" in problem for problem in problems), problems
+    if canonical_state == "missing":
+        assert not canonical.exists()
+    else:
+        assert canonical.read_text(encoding="utf-8") == "{invalid"
+
+
+def test_preflight_ignores_unrelated_root_file(_fixture):
+    fixture = _fixture(_GOOD_ORG, {"org.json": "{not an installed organization"})
+    assert run.preflight(fixture, {"id": "canonical-layout", "agent": "main"}) == []
 
 
 @pytest.mark.parametrize(
@@ -324,10 +335,8 @@ def test_preflight_does_not_implicitly_migrate_legacy_fixtures(_fixture, canonic
 )
 def test_repository_fixtures_use_canonical_installed_layout(fixture):
     seed = fixture / "seed"
-    assert seed.is_dir()  # Fixture setup trees are not obsolete installed seed copies.
+    assert seed.is_dir()
     assert (seed / run.ORG_PATH).is_file()
-    assert not (seed / "org.json").exists()
-    assert not (seed / ".github" / "agent-org" / "seed").exists()
     org = run._fixture_org(fixture)
     canonical = run.ORG_PATH.as_posix()
     if run.ov.managed(org, canonical):
@@ -360,8 +369,6 @@ def test_sandbox_assembly_uses_only_independent_fixture_org(_fixture, tmp_path):
     sandbox.mkdir()
     assert run.build_sandbox(fixture, sandbox)
     assert run._read_org(sandbox) == org
-    assert not (sandbox / "org.json").exists()
-    assert not (sandbox / ".github" / "agent-org" / "seed").exists()
     assert sorted(file.name for file in (sandbox / ".github" / "agents").glob("*.md")) == [
         "archivist.md", "splitter.md",
     ]
@@ -555,8 +562,6 @@ def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch
         assert "AGENT_ORG_ACTING" not in env
         assert (workspace / ".git").is_file()
         assert run._read_org(workspace) == org
-        assert not (workspace / "org.json").exists()
-        assert not (workspace / ".github" / "agent-org" / "seed").exists()
         assert not (workspace / ".github" / "agents" / "main.md").exists()
         assert not (workspace / ".github" / "agent-org" / "tools" / "bundle_validator.py").exists()
         observed["workspace"] = workspace
@@ -592,8 +597,8 @@ def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch
     assert not observed["workspace"].exists()
 
 
-@pytest.mark.parametrize("final_state", ["missing", "malformed", "rewritten", "conflicting"])
-def test_runner_grades_only_unambiguous_canonical_final_org(_fixture, monkeypatch, final_state):
+@pytest.mark.parametrize("final_state", ["missing", "malformed", "rewritten"])
+def test_runner_rejects_invalid_canonical_final_org(_fixture, monkeypatch, final_state):
     fixture = _fixture(_GOOD_ORG)
     manifest = {"id": "canonical-final", "agent": "main", "intent": "Exercise final organization grading"}
     (fixture / "manifest.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
@@ -603,9 +608,6 @@ def test_runner_grades_only_unambiguous_canonical_final_org(_fixture, monkeypatc
         assert acting == "main"
         assert run._read_org(workspace) == _GOOD_ORG
         observed["workspace"] = workspace
-        # Intentional legacy decoy: a valid root file must not mask a broken or ambiguous live config.
-        if final_state != "rewritten":
-            (workspace / "org.json").write_text(json.dumps(_GOOD_ORG), encoding="utf-8")
         canonical = workspace / run.ORG_PATH
         if final_state == "missing":
             canonical.unlink()
@@ -626,6 +628,5 @@ def test_runner_grades_only_unambiguous_canonical_final_org(_fixture, monkeypatc
     assert captured["grade"]["passed"] is False
     expected_check = "configuration" if final_state == "rewritten" else "coverage"
     assert check(captured["grade"], expected_check)["result"] == "fail"
-    assert (run.ORG_PATH.as_posix() in captured["changed_paths"]) is (final_state != "conflicting")
-    assert ("org.json" in captured["changed_paths"]) is (final_state != "rewritten")
+    assert captured["changed_paths"] == [run.ORG_PATH.as_posix()]
     assert not observed["workspace"].exists()

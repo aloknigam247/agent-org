@@ -24,14 +24,8 @@ Start the root task prompt with `AgentOrgActingNode: <org.root>`. Every live nod
 repository-relative file named by the `loop:` line in its definition's Markdown body.
 
 Handle kernel governance only when the human explicitly requests it. After bootstrap, only `splitter` may
-apply an approved organization change. Present each SplitProposal or narrowly scoped ConfigRelocation via
-`ask_user` for approve / edit / reject;
+apply an approved organization change. Present each SplitProposal via `ask_user` for approve / edit / reject;
 on approval, invoke `splitter` with the root's existing session worktree and the approved proposal.
-
-Normal discovery has no legacy fallback. If both live config paths exist, stop: neither wins. For the single
-approved v4 -> v5 relocation, follow the bounded activation procedure in
-`.github\agent-org\tools\README.md` before invoking splitter. Keep the existing run descriptor; do not bootstrap
-the live legacy repository, alter charters yourself, disable hooks, or reload incomplete runtime dependencies.
 
 Invoke `agent-org-design` through the native skill tool when a design question requires it. Do not read SKILL.md
 as a substitute for skill invocation. If it was installed during this session, request `/skills reload` first.
