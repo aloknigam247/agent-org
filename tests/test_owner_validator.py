@@ -587,6 +587,40 @@ def test_hook_cli_allows_when_no_org(tmp_path):
 
 # --- usage log + split-advice (parent's over-burden signal) -----------------------------------------
 
+@pytest.fixture
+def root_split_repo(git_repo):
+    return git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
+
+
+@pytest.mark.parametrize("tool", [
+    TOOL,
+    TOOL.parents[2] / ".github" / "agent-org" / "tools" / "owner_validator.py",
+], ids=["plugin", "installed"])
+@pytest.mark.parametrize("agent,is_root", [("root", True), ("a", False)])
+@pytest.mark.parametrize("tokens,limits,advised", [
+    (0, [], False),
+    (150000, [], True),
+    (60, ["--window", "100", "--threshold", "0.5"], True),
+], ids=["small", "default-usage-burden", "custom-limits"])
+def test_root_split_check_cli_uses_org_root_and_existing_advice(root_split_repo, tool, agent, is_root,
+                                                             tokens, limits, advised):
+    ov.usage_record(str(root_split_repo), agent, tokens)
+    common = [sys.executable, str(tool), "--root", str(root_split_repo), *limits]
+    advice = subprocess.run([*common, "--split-advice", agent],
+                            capture_output=True, text=True, encoding="utf-8", check=True)
+    result = subprocess.run([*common, "--root-split-check", agent],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stdout + result.stderr
+    advice = json.loads(advice.stdout)
+    assert advice["recommend_split"] is advised
+    assert json.loads(result.stdout) == {
+        "agent": agent,
+        "is_root": is_root,
+        "recommend_split": advised,
+        "reasons": advice["reasons"],
+    }
+
+
 def test_usage_record_and_split_advice_over_by_usage(git_repo):
     repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     # 'a' owns a tiny domain, but a session burned a lot of tokens -> over threshold by usage

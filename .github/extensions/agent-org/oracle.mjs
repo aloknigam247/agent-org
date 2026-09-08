@@ -45,6 +45,8 @@ export function createOracle(entry) {
       args.push("--usage-record", payload.node, "--tokens", String(payload.tokens), "--root", found.directory);
     } else if (event === "splitAdvice") {
       args.push("--split-advice", payload.node, "--root", found.directory);
+    } else if (event === "rootSplitCheck") {
+      args.push("--root-split-check", payload.node, "--root", found.directory);
     } else {
       args.push(event === "postToolUse" ? "--post-hook" : "--hook");
     }
