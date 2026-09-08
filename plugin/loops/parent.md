@@ -74,8 +74,11 @@ Shared worktrees isolate root sessions; they do not serialize siblings, indexes,
    direct child if that owner is in its subtree; otherwise return unresolved work to your own parent.
    Never repair a descendant's files yourself.
 4. **Validate and report.** Require the owning children to pass their checks and resolve in-scope coverage
-   gaps. Check each child's `owner_validator.py --split-advice <child-id>` result and propose growth on its
-   behalf when needed. Return aggregate results and unresolved work upward. Only the root performs
+   gaps. The org runtime now appends each child's authoritative token usage and `--split-advice` result to
+   the child's completion automatically, so you receive it even when the child did not self-report; still
+   confirm each child's `owner_validator.py --split-advice <child-id>` signal and PROPOSE growth on its
+   behalf when advised. Advice never changes topology or charters on its own — a human approves every split.
+   Return aggregate results and unresolved work upward. Only the root performs
    integration and the selected collaboration profile's checkpoint, after reconciliation.
 
 ## Finish

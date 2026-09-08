@@ -632,6 +632,23 @@ def usage_record(root, agent, tokens):
             pass
 
 
+def claim_completion(root, key):
+    """Atomically claim the right to report one child completion exactly once. Both extension providers
+    (project + plugin) and repeated background reads race for the same key; only the process that wins the
+    exclusive create returns ``{"claimed": True}``. Git-local so the claim is shared across processes."""
+    d = _state_dir(root, "completion")
+    if d is None:
+        return {"claimed": False}
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(key)) or "unkeyed"
+    path = d / f"{safe}.claim"
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return {"claimed": True}
+    except FileExistsError:
+        return {"claimed": False}
+
+
 def split_advice(org, agent, root, window=200000, threshold=0.60):
     """Advise whether a node is over-burdened, so a **parent** can propose a split even if the child did
     not self-report. Combines two signals: the static domain-size proxy (--size) and the peak per-session
@@ -774,6 +791,8 @@ def main(argv=None):
     parser.add_argument("--tokens", type=int, default=0, help="token count for --usage-record")
     parser.add_argument("--split-advice", metavar="NODE",
                         help="advise whether NODE is over-burdened (domain size + peak usage) -> split")
+    parser.add_argument("--claim-completion", metavar="KEY",
+                        help="atomically claim (exclusive-create) the right to report completion KEY once")
     parser.add_argument("--checkpoint", action="store_true", help="record the reconciled hybrid source snapshot")
     parser.add_argument("--drift", action="store_true", help="report managed files changed since reconciliation")
     parser.add_argument("--foreign", action="store_true", help="read foreign-write audit records")
@@ -786,6 +805,10 @@ def main(argv=None):
 
     if args.usage_record:
         usage_record(args.root, args.usage_record, args.tokens)
+        return 0
+
+    if args.claim_completion:
+        print(json.dumps(claim_completion(args.root, args.claim_completion)))
         return 0
 
     if args.hook or args.post_hook:

@@ -1,6 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createRuntime } from "../plugin/extensions/agent-org/runtime.mjs";
+
+// Shared helper: a mock oracle whose claimCompletion is a real cross-process exclusive-create in `stateDir`,
+// mirroring owner_validator.claim_completion. splitAdvice returns `advice` (or a no-split default).
+function makeOracle(stateDir, advice) {
+  return async (event, input) => {
+    if (event === "claimCompletion") {
+      fs.mkdirSync(stateDir, { recursive: true });
+      const safe = String(input.key).replace(/[^A-Za-z0-9._-]/g, "_") || "unkeyed";
+      try {
+        fs.writeFileSync(path.join(stateDir, `${safe}.claim`), "", { flag: "wx" });
+        return { claimed: true };
+      } catch {
+        return { claimed: false };
+      }
+    }
+    if (event === "splitAdvice") return advice ?? { agent: input.node, recommend_split: false, reasons: [] };
+    return {};
+  };
+}
+
+async function bindParent(runtime) {
+  await runtime.hooks.onUserPromptSubmitted(
+    { sessionId: "parent", cwd: "D:\\wt", prompt: "AgentOrgActingNode: main\nAgentOrgRunId: root\nAgentOrgWorktree: D:\\wt" },
+    { sessionId: "parent" },
+  );
+}
+
+function tmpState() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "agentorg-completion-"));
+}
+
 
 test("parallel child sessions retain distinct actors in one shared workspace", async () => {
   const calls = [];
@@ -174,4 +208,123 @@ test("usage is per child and cache counters are not counted again", async () => 
   assert.deepEqual(calls, [{ event: "usage", input: {
     cwd: "D:\\repo", node: "stock", sessionId: "child", tokens: 120,
   } }]);
+});
+
+test("a child completion with no self-reported usage is annotated with authoritative tokens + split advice", async () => {
+  const runtime = createRuntime(makeOracle(tmpState(),
+    { agent: "stock", recommend_split: true, reasons: ["peak session tokens 130000 >= 120000"] }));
+  await bindParent(runtime);
+  await runtime.onEvent({ type: "subagent.started", agentId: "child", data: { agentName: "stock", toolCallId: "call-1" } });
+  await runtime.onEvent({
+    type: "subagent.completed", agentId: "child",
+    data: { agentName: "stock", toolCallId: "call-1", totalTokens: 4242, durationMs: 999, model: "gpt-x" },
+  });
+  const result = await runtime.hooks.onPostToolUse({
+    toolName: "task", toolCallId: "call-1", sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "child-authored summary", resultType: "success" },
+  }, { sessionId: "parent" });
+  assert.ok(result.modifiedResult, "task completion must be annotated");
+  assert.equal(result.modifiedResult.resultType, "success");
+  assert.match(result.modifiedResult.textResultForLlm, /^child-authored summary\n\n\[agent-org\] Authoritative child completion/);
+  assert.match(result.modifiedResult.textResultForLlm, /tokens: 4242 total input\+output/);
+  assert.match(result.modifiedResult.textResultForLlm, /model: gpt-x/);
+  assert.match(result.modifiedResult.textResultForLlm, /RECOMMEND SPLIT for stock — peak session tokens 130000 >= 120000/);
+  assert.match(result.modifiedResult.textResultForLlm, /must PROPOSE any split for human approval/);
+});
+
+test("association is by toolCallId / agentId, not session identity", async () => {
+  const runtime = createRuntime(makeOracle(tmpState()));
+  await bindParent(runtime);
+  await runtime.onEvent({ type: "subagent.completed", agentId: "child",
+    data: { agentName: "stock", toolCallId: "call-1", totalTokens: 10 } });
+  const miss = await runtime.hooks.onPostToolUse({
+    toolName: "task", toolCallId: "OTHER-CALL", sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "unrelated", resultType: "success" },
+  }, { sessionId: "parent" });
+  assert.equal(miss.modifiedResult, undefined);
+  const hit = await runtime.hooks.onPostToolUse({
+    toolName: "task", toolCallId: "call-1", sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "matched", resultType: "success" },
+  }, { sessionId: "parent" });
+  assert.match(hit.modifiedResult.textResultForLlm, /^matched\n\n/);
+});
+
+test("background read_agent is annotated only after a real completion is recorded", async () => {
+  const runtime = createRuntime(makeOracle(tmpState()));
+  await bindParent(runtime);
+  // Still-running: no completion recorded for this agent id => never annotate.
+  const running = await runtime.hooks.onPostToolUse({
+    toolName: "read_agent", toolArgs: { agent_id: "bg" }, sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "status: running", resultType: "success" },
+  }, { sessionId: "parent" });
+  assert.equal(running.modifiedResult, undefined);
+  // Completion arrives, then read_agent by agent_id is annotated.
+  await runtime.onEvent({ type: "subagent.completed", agentId: "bg",
+    data: { agentName: "shipping", toolCallId: "call-bg", totalTokens: 77 } });
+  const done = await runtime.hooks.onPostToolUse({
+    toolName: "read_agent", toolArgs: { agent_id: "bg" }, sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "final child text", resultType: "success" },
+  }, { sessionId: "parent" });
+  assert.match(done.modifiedResult.textResultForLlm, /^final child text\n\n/);
+  assert.match(done.modifiedResult.textResultForLlm, /tokens: 77 total/);
+});
+
+test("footer injection is exactly once across duplicate providers and repeated reads", async () => {
+  const dir = tmpState();
+  const first = createRuntime(makeOracle(dir));
+  const second = createRuntime(makeOracle(dir));
+  for (const runtime of [first, second]) {
+    await bindParent(runtime);
+    await runtime.onEvent({ type: "subagent.completed", agentId: "child",
+      data: { agentName: "stock", toolCallId: "call-1", totalTokens: 5 } });
+  }
+  const post = (runtime) => runtime.hooks.onPostToolUse({
+    toolName: "task", toolCallId: "call-1", sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "body", resultType: "success" },
+  }, { sessionId: "parent" });
+  const a = await post(first);
+  const b = await post(second);
+  assert.equal([a, b].filter((r) => r.modifiedResult).length, 1);
+
+  // Repeated read_agent on the same completion within one process injects only once.
+  const solo = createRuntime(makeOracle(tmpState()));
+  await bindParent(solo);
+  await solo.onEvent({ type: "subagent.completed", agentId: "bg",
+    data: { agentName: "shipping", toolCallId: "call-bg", totalTokens: 9 } });
+  const read = () => solo.hooks.onPostToolUse({
+    toolName: "read_agent", toolArgs: { agent_id: "bg" }, sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "final", resultType: "success" },
+  }, { sessionId: "parent" });
+  const r1 = await read();
+  const r2 = await read();
+  assert.ok(r1.modifiedResult);
+  assert.equal(r2.modifiedResult, undefined);
+});
+
+test("a completion with no usage at all states tokens are unavailable, not zero", async () => {
+  const runtime = createRuntime(makeOracle(tmpState()));
+  await bindParent(runtime);
+  await runtime.onEvent({ type: "subagent.completed", agentId: "child",
+    data: { agentName: "stock", toolCallId: "call-2" } });
+  const result = await runtime.hooks.onPostToolUse({
+    toolName: "task", toolCallId: "call-2", sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "body", resultType: "success" },
+  }, { sessionId: "parent" });
+  assert.match(result.modifiedResult.textResultForLlm, /tokens: unavailable/);
+  assert.doesNotMatch(result.modifiedResult.textResultForLlm, /tokens: 0\b/);
+});
+
+test("a failed child completion preserves the failure resultType and reports the error", async () => {
+  const runtime = createRuntime(makeOracle(tmpState()));
+  await bindParent(runtime);
+  await runtime.onEvent({ type: "subagent.failed", agentId: "child",
+    data: { agentName: "stock", toolCallId: "call-3", totalTokens: 12, error: "boom" } });
+  const result = await runtime.hooks.onPostToolUse({
+    toolName: "task", toolCallId: "call-3", sessionId: "parent", cwd: "D:\\wt",
+    toolResult: { textResultForLlm: "partial work", resultType: "failure" },
+  }, { sessionId: "parent" });
+  assert.equal(result.modifiedResult.resultType, "failure");
+  assert.match(result.modifiedResult.textResultForLlm, /^partial work\n\n/);
+  assert.match(result.modifiedResult.textResultForLlm, /status: failed: boom/);
+  assert.match(result.modifiedResult.textResultForLlm, /tokens: 12 total/);
 });
