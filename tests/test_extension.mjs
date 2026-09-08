@@ -45,6 +45,160 @@ function deferred() {
   return { promise, resolve };
 }
 
+for (const [provider, makeRuntime] of [["plugin", createRuntime], ["project", createProjectRuntime]]) {
+  test(`${provider} agent stop: an advised root blocks with an actionable, human-gated split proposal`, async () => {
+    const calls = [];
+    const runtime = makeRuntime(async (event, input) => {
+      calls.push({ event, input });
+      return { agent: input.node, is_root: true, recommend_split: true, reasons: ["overloaded"] };
+    });
+    // Root status comes from the oracle, not a conventional node name or the presence of a parent header.
+    await bindChild(runtime, "top", "coordinator");
+    assert.equal(typeof runtime.hooks.onAgentStop, "function", "createRuntime must register the SDK onAgentStop hook");
+    const result = await runtime.hooks.onAgentStop({
+      sessionId: "top", timestamp: new Date(), workingDirectory: "D:\\source", stopReason: "end_turn",
+    }, { sessionId: "host" });
+    assert.equal(result.decision, "block");
+    assert.match(result.reason, /top node.*no parent.*overload/i);
+    assert.match(result.reason, /owner_validator\.py --split-advice coordinator/);
+    assert.match(result.reason, /SplitProposal/);
+    assert.match(result.reason, /\.github\\agents\\splitter\.md/);
+    assert.match(result.reason, /human.*approv.*every split/i);
+    assert.deepEqual(calls, [{ event: "rootSplitCheck", input: { cwd: "D:\\wt", node: "coordinator" } }]);
+  });
+
+  test(`${provider} agent stop: non-root, unadvised and non-boolean verdicts do not block`, async () => {
+    for (const verdict of [
+      { is_root: false, recommend_split: true },
+      { is_root: true, recommend_split: false },
+      { is_root: "true", recommend_split: true },
+      { is_root: true, recommend_split: "true" },
+      {},
+    ]) {
+      let calls = 0;
+      const runtime = makeRuntime(async (event, input) => {
+        assert.equal(event, "rootSplitCheck");
+        assert.equal(input.node, "main");
+        calls += 1;
+        return { agent: input.node, ...verdict };
+      });
+      // A main node without a parent header is still not proof of root status.
+      await bindParent(runtime);
+      assert.equal(await runtime.hooks.onAgentStop({ sessionId: "parent" }), undefined);
+      assert.equal(calls, 1);
+    }
+  });
+
+  test(`${provider} agent stop: an unbound host never borrows the invocation context`, async () => {
+    const calls = [];
+    const runtime = makeRuntime(async (event, input) => {
+      calls.push({ event, input });
+      return { is_root: true, recommend_split: true };
+    });
+    await bindParent(runtime);
+    await runtime.hooks.onUserPromptSubmitted({ sessionId: "host", prompt: "ordinary host prompt" });
+    assert.equal(await runtime.hooks.onAgentStop({
+      sessionId: "host", workingDirectory: "D:\\wt",
+    }, { sessionId: "parent" }), undefined);
+    assert.equal(await runtime.hooks.onAgentStop({ workingDirectory: "D:\\wt" }), undefined);
+    assert.deepEqual(calls, [], "an unmanaged session must not query the oracle");
+  });
+
+  test(`${provider} agent stop: input session identity takes precedence and leaves the parent independent`, async () => {
+    const nodes = [];
+    const runtime = makeRuntime(async (_event, input) => {
+      nodes.push(input.node);
+      return { is_root: input.node === "main", recommend_split: true };
+    });
+    await bindParent(runtime);
+    await bindChild(runtime, "child", "kernel");
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "child" }, { sessionId: "parent" }), undefined);
+    assert.equal((await runtime.hooks.onAgentStop({ sessionId: "parent" })).decision, "block");
+    assert.deepEqual(nodes, ["kernel", "main"]);
+  });
+
+  test(`${provider} agent stop: blocks only once per session, even after a new turn`, async () => {
+    let calls = 0;
+    const runtime = makeRuntime(async () => {
+      calls += 1;
+      return { is_root: true, recommend_split: true };
+    });
+    await bindParent(runtime);
+    assert.equal((await runtime.hooks.onAgentStop({ sessionId: "parent" })).decision, "block");
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "parent" }), undefined);
+    await runtime.hooks.onUserPromptSubmitted({ sessionId: "parent", prompt: "Here is the proposal." });
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "parent" }), undefined);
+    assert.equal(calls, 1);
+  });
+
+  test(`${provider} agent stop: SessionEnd clears only the ending session and permits a rebound block`, async () => {
+    let calls = 0;
+    const runtime = makeRuntime(async () => {
+      calls += 1;
+      return { is_root: true, recommend_split: true };
+    });
+    await bindParent(runtime);
+    await bindChild(runtime, "other-root", "coordinator", "host", "other-run", "D:\\other");
+    for (const sessionId of ["parent", "other-root"]) {
+      assert.equal((await runtime.hooks.onAgentStop({ sessionId })).decision, "block");
+    }
+    await runtime.hooks.onSessionEnd({ sessionId: "parent" }, { sessionId: "other-root" });
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "parent" }), undefined);
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "other-root" }), undefined);
+    await bindParent(runtime);
+    assert.equal((await runtime.hooks.onAgentStop({ sessionId: "parent" })).decision, "block");
+    await runtime.hooks.onSessionEnd({}, { sessionId: "parent" });
+    await bindParent(runtime);
+    assert.equal((await runtime.hooks.onAgentStop({ sessionId: "parent" })).decision, "block");
+    assert.equal(calls, 4);
+  });
+
+  test(`${provider} agent stop: an oracle failure is reported, fails open and does not consume the block`, async () => {
+    const errors = [];
+    let calls = 0;
+    const runtime = makeRuntime(async () => {
+      if (++calls === 1) throw new Error("oracle unavailable");
+      return { is_root: true, recommend_split: true };
+    }, (error) => errors.push(error));
+    await bindParent(runtime);
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "parent" }), undefined);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /^agent-org: .*oracle unavailable/);
+    assert.equal((await runtime.hooks.onAgentStop({ sessionId: "parent" })).decision, "block");
+    assert.equal(calls, 2);
+  });
+
+  test(`${provider} agent stop: invocation fallback uses the run root before the stop working directory`, async () => {
+    const calls = [];
+    const runtime = makeRuntime(async (event, input) => {
+      calls.push({ event, input });
+      return { is_root: true, recommend_split: true };
+    });
+    await runtime.hooks.onUserPromptSubmitted({
+      sessionId: "parent", workingDirectory: "D:\\run-root", prompt: "AgentOrgActingNode: main",
+    });
+    assert.equal((await runtime.hooks.onAgentStop({
+      workingDirectory: "D:\\stop-cwd",
+    }, { sessionId: "parent" })).decision, "block");
+    assert.deepEqual(calls, [{ event: "rootSplitCheck", input: { cwd: "D:\\run-root", node: "main" } }]);
+  });
+
+  test(`${provider} agent stop: missing workspace skips the oracle until a stop working directory is available`, async () => {
+    const calls = [];
+    const runtime = makeRuntime(async (event, input) => {
+      calls.push({ event, input });
+      return { is_root: true, recommend_split: true };
+    });
+    await runtime.hooks.onUserPromptSubmitted({ sessionId: "parent", prompt: "AgentOrgActingNode: main" });
+    assert.equal(await runtime.hooks.onAgentStop({ sessionId: "parent" }), undefined);
+    assert.deepEqual(calls, []);
+    assert.equal((await runtime.hooks.onAgentStop({
+      sessionId: "parent", workingDirectory: "D:\\stop-cwd",
+    })).decision, "block");
+    assert.deepEqual(calls, [{ event: "rootSplitCheck", input: { cwd: "D:\\stop-cwd", node: "main" } }]);
+  });
+}
+
 test("parallel child sessions retain distinct actors in one shared workspace", async () => {
   const calls = [];
   const runtime = createRuntime(async (event, input) => {

@@ -7,6 +7,7 @@ export function createRuntime(callOracle, reportError = console.error) {
   const names = new Map();
   const tokens = new Map();
   const roots = new Map();
+  const stopEnforced = new Set();
   // One latest completion per native child id, replaced/invalidated at the next turn.
   // A hook has no delivery acknowledgement: never consume a report or persist a pre-delivery claim.
   const reports = new Map();
@@ -37,6 +38,27 @@ export function createRuntime(callOracle, reportError = console.error) {
   }
 
   const hooks = {
+    onAgentStop: async (input, invocation) => {
+      const sessionId = input.sessionId ?? invocation?.sessionId;
+      const context = contexts.get(sessionId);
+      if (!context?.node || stopEnforced.has(sessionId)) return;
+      const cwd = context.worktree ?? roots.get(context.run_id) ?? input.workingDirectory;
+      if (!cwd) return;
+      try {
+        const result = await callOracle("rootSplitCheck", { cwd, node: context.node });
+        if (result.is_root === true && result.recommend_split === true) {
+          stopEnforced.add(sessionId);
+          return {
+            decision: "block",
+            reason: "The top node has no parent to surface its overload. " +
+              `Run owner_validator.py --split-advice ${context.node} and return a SplitProposal per ` +
+              ".github\\agents\\splitter.md; a human must still approve every split.",
+          };
+        }
+      } catch (error) {
+        reportError(`agent-org: root split check failed: ${error.message}`);
+      }
+    },
     onPostToolUse: async (input, invocation) => {
       const base = await toolHook(input, invocation, true);
       const injection = await injectCompletion(payload(input, invocation));
@@ -56,7 +78,9 @@ export function createRuntime(callOracle, reportError = console.error) {
       return result;
     },
     onSessionEnd: async (input, invocation) => {
-      contexts.delete(input.sessionId ?? invocation?.sessionId);
+      const sessionId = input.sessionId ?? invocation?.sessionId;
+      contexts.delete(sessionId);
+      stopEnforced.delete(sessionId);
       // The native completion event can follow SessionEnd; retain observed usage until it is captured.
     },
     onUserPromptSubmitted: async (input, invocation) => {

@@ -774,6 +774,8 @@ def main(argv=None):
     parser.add_argument("--tokens", type=int, default=0, help="token count for --usage-record")
     parser.add_argument("--split-advice", metavar="NODE",
                         help="advise whether NODE is over-burdened (domain size + peak usage) -> split")
+    parser.add_argument("--root-split-check", metavar="NODE",
+                        help="report whether NODE is the org root and its current split recommendation")
     parser.add_argument("--checkpoint", action="store_true", help="record the reconciled hybrid source snapshot")
     parser.add_argument("--drift", action="store_true", help="report managed files changed since reconciliation")
     parser.add_argument("--foreign", action="store_true", help="read foreign-write audit records")
@@ -807,8 +809,12 @@ def main(argv=None):
         print(json.dumps(drift(org, args.root), indent=2))
         return 0
 
-    if args.split_advice:
-        result = split_advice(org, args.split_advice, args.root, args.window, args.threshold)
+    if args.split_advice or args.root_split_check:
+        agent = args.split_advice or args.root_split_check
+        result = split_advice(org, agent, args.root, args.window, args.threshold)
+        if args.root_split_check:
+            result = {"agent": agent, "is_root": org["root"] == agent,
+                      "recommend_split": result["recommend_split"], "reasons": result["reasons"]}
         print(json.dumps(result, indent=2))
         return 0
 
