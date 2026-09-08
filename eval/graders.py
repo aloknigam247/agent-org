@@ -1,10 +1,11 @@
 """agent-org eval graders (E2) — deterministic, property-based, reusing the owner-oracle.
 
-Given a captured run (the manifest, the sandbox's `org.json`, the changed paths, the sandbox path,
-the response), produce a verdict: a list of checks each `pass`/`fail` with evidence, and an overall
-`passed` = all applicable checks green. No LLM judges here (those are advisory, deferred to E5).
+Given a captured run (the manifest, the sandbox's `.github/agent-org/org.json`, the repo-root-relative
+changed paths, the sandbox root, the response), produce a verdict: a list of checks each `pass`/`fail`
+with evidence, and an overall `passed` = all applicable checks green. No LLM judges here (those are
+advisory, deferred to E5).
 
-Ground truth for routing is the manifest's human `expected_owner`, independent of `org.json` (s7):
+Ground truth for routing is the manifest's human `expected_owner`, independent of the baseline org (s7):
 the oracle only attributes what the agent *did* (which node owns each changed path), never the
 expected side.
 """
@@ -33,7 +34,7 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
           final_org=_UNCHANGED, run_id=None, trajectory=None):
     """Grade a run. Ownership is attributed with the immutable baseline `org` the agent was given
     (routing/containment), while coverage validates the run's `final_org` (the post-run tree). A
-    missing/unparseable final org (final_org is None) fails coverage rather than crashing."""
+    missing/unparseable/conflicting final org (final_org is None) fails coverage rather than crashing."""
     checks = []
     compiled = ov.compile_nodes(org.get("nodes", []))
     final = org if final_org is _UNCHANGED else final_org
@@ -95,7 +96,7 @@ def grade(manifest, org, changed_paths, sandbox, response="", exit_code=0, timed
     # coverage — the repo is still fully and singly owned after the change (validated on the FINAL org)
     if final is None:
         checks.append({"check": "coverage", "result": "fail",
-                       "evidence": "final org.json missing or unparseable"})
+                       "evidence": f"final {bv.ORG_PATH.as_posix()} missing, unparseable, or conflicting"})
     else:
         cov = ov.validate(final, ov.git_tracked(sandbox))
         checks.append({"check": "coverage", "result": "pass" if cov["status"] == "ok" else "fail",

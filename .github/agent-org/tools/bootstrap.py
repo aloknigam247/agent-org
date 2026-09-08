@@ -9,9 +9,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import org_config as config_paths  # noqa: E402
+
+ORG_PATH = config_paths.ORG_PATH
+LEGACY_PATH = config_paths.LEGACY_PATH
+SEED_PATH = config_paths.SEED_PATH
+
 
 class BootstrapError(ValueError):
     """The requested overlay cannot be installed without a conflict."""
+
+
+def default_org():
+    """Stable fresh-target defaults, independent of every installed target and any seed file."""
+    return {
+        "version": 3, "root": "main", "nodes": [{
+            "id": "main", "parent": None, "children": [], "mode": "Leaf",
+            "charter": {
+                "domain": ["**"],
+                "concerns": [
+                    "owns the configured scope until the first split",
+                    "does all work directly; proposes a gated split when overloaded",
+                ],
+                "excludes": [],
+            },
+        }],
+    }
 
 
 def _node_id(value):
@@ -99,17 +123,26 @@ def _assets(source):
 
 
 def runtime_files(org, source=None) -> dict[str, bytes]:
-    """Render an overlay without org.json; source may be a plugin or an installed runtime root."""
+    """Render runtime assets only, never a live config or seed; safe for readiness staging."""
+    return _runtime_files(org, source, paths_only=False)
+
+
+def runtime_paths(org, source=None):
+    """Inventory without reading contents, so descriptor-known deletions remain integrable."""
+    return set(_runtime_files(org, source, paths_only=True))
+
+
+def _runtime_files(org, source, *, paths_only):
     config = _validate_org(org)
     assets = _assets(source)
     files = {}
 
     def copy(relative, path):
-        files[relative] = _read(path)
+        files[relative] = b"" if paths_only else _read(path)
 
-    template = _read(assets["template"]).decode("utf-8-sig").replace("\r\n", "\n")
+    template = "" if paths_only else _read(assets["template"]).decode("utf-8-sig").replace("\r\n", "\n")
     internal_visibility = "\nuser-invocable: false\n"
-    if internal_visibility not in template:
+    if not paths_only and internal_visibility not in template:
         raise BootstrapError("The node template must default to user-invocable: false.")
     files[".github/agent-org/templates/_node.template.md"] = template.encode("utf-8")
     for node in org["nodes"]:
@@ -140,13 +173,15 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
         copy(f".github/agent-org/loops/{name}", assets["loops"] / name)
     for name in ("agent-org-design", "agent-org-wiki-curate"):
         copy(f".github/skills/{name}/SKILL.md", assets["skills"] / name / "SKILL.md")
-    for name in ("README.md", "bootstrap.py", "owner_validator.py", "requirements.txt", "worktree.py"):
+    for name in (
+        "README.md", "bootstrap.py", "config_relocation.py", "org_config.py",
+        "owner_validator.py", "requirements.txt", "worktree.py",
+    ):
         copy(f".github/agent-org/tools/{name}", assets["root"] / "tools" / name)
     hook = assets["root"] / "tools" / "hook.ps1"
     if hook.is_file():
         copy(".github/agent-org/tools/hook.ps1", hook)
     copy(".github/agent-org/org.schema.json", assets["root"] / "org.schema.json")
-    copy(".github/agent-org/seed/org.json", assets["root"] / "seed" / "org.json")
     copy(".github/hooks/agent-org.json", assets["hooks"])
 
     extension = assets["extension"]
@@ -227,19 +262,23 @@ def _exclude_append(existing, entries):
     return prefix + newline.join(entry.encode("utf-8") for entry in missing) + newline, missing
 
 
-def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents", storage="local", source=None) -> dict:
+def bootstrap_repo(
+    repo, *, root_name=None, scope=None, collaboration=None, storage=None, source=None, migrate_legacy=False,
+) -> dict:
     """Preflight and install without overwriting files, changing the index, or resetting a live tree."""
-    requested = _configuration({
-        "collaboration": collaboration,
-        "root": root_name,
-        "scope": ["**"] if scope is None else scope,
-        "storage": storage,
-    })
     repo, common = _git_paths(repo)
-    problem = _destination_problem(repo, "org.json")
-    if problem:
-        raise BootstrapError(problem)
-    org_file = repo / "org.json"
+    for relative in (ORG_PATH, LEGACY_PATH, SEED_PATH):
+        problem = _destination_problem(repo, relative)
+        if problem:
+            raise BootstrapError(problem)
+    canonical, legacy = repo / ORG_PATH, repo / LEGACY_PATH
+    if canonical.exists() and legacy.exists():
+        raise BootstrapError("Conflicting live organization files; neither file will be selected or synchronized.")
+    if legacy.exists() and not migrate_legacy:
+        raise BootstrapError("Legacy org.json requires explicit --migrate-legacy; readiness must not migrate live state.")
+    if migrate_legacy and not legacy.exists():
+        raise BootstrapError("--migrate-legacy requires exactly one legacy org.json and no canonical live file.")
+    org_file = legacy if migrate_legacy else canonical
     if org_file.exists():
         org_bytes = org_file.read_bytes()
         try:
@@ -249,30 +288,46 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
                 "Existing org.json is not a valid organization; it will not be overwritten."
             ) from error
         actual = _validate_org(org)
+    else:
+        org = default_org()
+        actual = _configuration(org)
+    requested = _configuration({
+        "collaboration": actual["collaboration"] if collaboration is None else collaboration,
+        "root": actual["root"] if root_name is None else root_name,
+        "scope": actual["scope"] if scope is None else scope,
+        "storage": actual["storage"] if storage is None else storage,
+    })
+    storage = requested["storage"]
+    if org_file.exists():
         conflicts = [field for field in requested if requested[field] != actual[field]]
         if conflicts:
             raise BootstrapError("Existing organization conflicts with requested " + ", ".join(conflicts) + ".")
     else:
-        seed = _assets(source)["root"] / "seed" / "org.json"
-        org = json.loads(_read(seed).decode("utf-8-sig"))
-        _validate_org(org)
-        if len(org["nodes"]) != 1 or org["nodes"][0]["mode"] != "Leaf":
-            raise BootstrapError("The canonical bootstrap seed must contain one Leaf.")
-        org["root"] = root_name
-        org["nodes"][0]["id"] = root_name
+        org["root"] = requested["root"]
+        org["nodes"][0]["id"] = requested["root"]
         org["nodes"][0]["charter"]["domain"] = list(requested["scope"])
         for field in ("collaboration", "scope", "storage"):
             org[field] = requested[field]
         org_bytes = (json.dumps(org, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
     desired = runtime_files(org, source=source)
-    desired["org.json"] = org_bytes
+    desired[ORG_PATH] = org_bytes
     desired = dict(sorted(desired.items()))
     tracked = {
         path.decode("utf-8").casefold()
         for path in _git(repo, "ls-files", "--cached", "-z").split(b"\0") if path
     }
     conflicts = []
+    installed_seed = repo / SEED_PATH
+    seed_bytes = installed_seed.read_bytes() if installed_seed.exists() else None
+    if seed_bytes is not None:
+        try:
+            if json.loads(seed_bytes.decode("utf-8-sig")) != default_org():
+                conflicts.append(f"{SEED_PATH}: non-default legacy seed; preserve and resolve this collision")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            conflicts.append(f"{SEED_PATH}: invalid legacy seed; preserve and resolve this collision")
+    if migrate_legacy and storage == "local" and LEGACY_PATH.casefold() in tracked:
+        conflicts.append(f"{LEGACY_PATH}: already tracked; local excludes cannot hide tracked files")
     for kind, values in (("collaboration", ("agents", "hybrid")), ("scope", ("full", "partial"))):
         for value in values:
             relative = f".github/instructions/agent-org.{kind}-{value}.instructions.md"
@@ -319,8 +374,12 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
     exclude_bytes = exclude.read_bytes() if exclude.exists() else b""
     addition, exclude_added = _exclude_append(exclude_bytes, entries)
     created = []
+    moved = False
+    removed_seed = False
     try:
         for relative in pending:
+            if migrate_legacy and relative == ORG_PATH:
+                continue
             path = repo.joinpath(*relative.split("/"))
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("xb") as file:
@@ -330,11 +389,28 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
             exclude.parent.mkdir(parents=True, exist_ok=True)
             with exclude.open("ab") as file:
                 file.write(addition)
-    except OSError as error:
+        if migrate_legacy:
+            if legacy.read_bytes() != org_bytes or canonical.exists():
+                raise BootstrapError("Legacy migration candidates changed after preflight.")
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            legacy.rename(canonical)
+            moved = True
+        if seed_bytes is not None:
+            if installed_seed.read_bytes() != seed_bytes:
+                raise BootstrapError("Legacy seed changed after preflight.")
+            installed_seed.unlink()
+            removed_seed = True
+    except (OSError, BootstrapError) as error:
+        if moved and canonical.is_file() and canonical.read_bytes() == org_bytes and not legacy.exists():
+            canonical.rename(legacy)
+        if removed_seed and not installed_seed.exists():
+            installed_seed.write_bytes(seed_bytes)
         for relative in reversed(created):
             path = repo.joinpath(*relative.split("/"))
             if path.is_file() and path.read_bytes() == desired[relative]:
                 path.unlink()
+        if addition and exclude.is_file() and exclude.read_bytes() == exclude_bytes + addition:
+            exclude.write_bytes(exclude_bytes)
         raise BootstrapError(f"Bootstrap could not finish writing the overlay: {error}") from error
 
     return {
@@ -344,27 +420,60 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
         "existing": existing,
         "org": org,
         "repo": str(repo),
+        "migrated": {"source": LEGACY_PATH, "destination": ORG_PATH} if moved else None,
+        "removed": [SEED_PATH] if removed_seed else [],
     }
+
+
+def check_runtime(repo, *, org_path=ORG_PATH, source=None):
+    """Read-only readiness check. --org org.json is explicit, never implicit discovery."""
+    repo, _ = _git_paths(repo)
+    try:
+        file = config_paths.config_path(repo, explicit=org_path)
+        org = json.loads(file.read_text(encoding="utf-8-sig"))
+    except ValueError as error:
+        raise BootstrapError(str(error)) from error
+    desired = runtime_files(org, source)
+    drift = [
+        name for name, content in desired.items()
+        if _destination_problem(repo, name) or not (repo / name).is_file()
+        or not _same_content((repo / name).read_bytes(), content)
+    ]
+    if (repo / SEED_PATH).exists():
+        drift.append(SEED_PATH)
+    return {"status": "drift" if drift else "ok", "drift": drift, "org_path": str(file)}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--collaboration", choices=("agents", "hybrid"), default="agents")
+    parser.add_argument("--collaboration", choices=("agents", "hybrid"))
     parser.add_argument("--repo", default=".", help="existing Git worktree root")
-    parser.add_argument("--root-name", default="main", help="root node id (default: main)")
+    parser.add_argument("--root-name", help="root node id (fresh default: main; reruns preserve live configuration)")
     parser.add_argument("--scope", nargs="+", help="managed gitignore globs (default: **)")
-    parser.add_argument("--storage", choices=("local", "tracked"), default="local")
+    parser.add_argument("--storage", choices=("local", "tracked"))
+    parser.add_argument("--source", help="explicit plugin root or installed runtime root")
+    parser.add_argument("--migrate-legacy", action="store_true", help="explicit one-time legacy file move, preserving bytes")
+    parser.add_argument("--check-runtime", action="store_true", help="read-only runtime-assets readiness comparison")
+    parser.add_argument("--org", help="explicit config for --check-runtime only (readiness may use org.json)")
     args = parser.parse_args(argv)
     try:
-        result = bootstrap_repo(
-            args.repo, root_name=args.root_name, scope=args.scope,
-            collaboration=args.collaboration, storage=args.storage,
-        )
+        if args.check_runtime:
+            if args.migrate_legacy:
+                raise BootstrapError("--check-runtime never migrates live state.")
+            result = check_runtime(args.repo, org_path=args.org or ORG_PATH, source=args.source)
+        else:
+            if args.org:
+                raise BootstrapError("--org is only supported by the read-only --check-runtime operation.")
+            result = bootstrap_repo(
+                args.repo, root_name=args.root_name, scope=args.scope,
+                collaboration=args.collaboration, storage=args.storage, source=args.source,
+                migrate_legacy=args.migrate_legacy,
+            )
     except (BootstrapError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    return 1 if result.get("status") == "drift" else 0
 
 
 if __name__ == "__main__":

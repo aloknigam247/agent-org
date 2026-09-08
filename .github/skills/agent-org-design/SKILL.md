@@ -6,7 +6,9 @@ user-invocable: false
 
 # Agent-org design reference
 
-`org.json` is live per-target state.
+`.github/agent-org/org.json` is the sole live per-target state. There is no installed org seed.
+All ownership paths and globs stay repository-root-relative. Two live candidates are a conflict, not a
+selection or synchronization opportunity; normal runtime never falls back to root `org.json`.
 
 ## 1. Ownership
 
@@ -79,8 +81,11 @@ each self-contained role file under `.github\agent-org\loops`; the
 
 ### 2.6 Bootstrap and storage
 
-The plugin's `bootstrap` skill defines adoption, installed layout, and local/tracked storage. The canonical plugin
-seed initializes each target's mutable organization; targets never share live state.
+The plugin's `bootstrap` skill defines adoption, installed layout, and local/tracked storage. Stable defaults
+in `bootstrap.default_org()` initialize each fresh target directly at the canonical path, independently of any
+evolved target. Explicit legacy bootstrap migration preserves existing target bytes and storage choices.
+Only the Host-invoked splitter applies the repository-specific ConfigRelocation described in its procedure;
+that approved v4 -> v5 transition is distinct from an add-children SplitProposal.
 
 ### 2.7 Owner validation
 
