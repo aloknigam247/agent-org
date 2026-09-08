@@ -35,8 +35,6 @@ ParentAgentSessionId: <parent-cli-session-id>
 Keep these markers explicit even when the task hook supplies bound context. The acting-node marker must be
 the first line; a shared pathname never identifies a child.
 
-During a Host-prepared ConfigRelocation only, resolve the exact leased live path with
-`python .github\agent-org\tools\config_relocation.py status --repo .`; do not guess a legacy path or migrate it.
 Prepare a plan before changes. Resolve ownership with
 `python .github\agent-org\tools\owner_validator.py --owner <repo-relative-path>`.
 Work only in the shared session worktree, without staging or reverting unrelated changes.

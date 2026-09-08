@@ -13,8 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import org_config as config_paths  # noqa: E402
 
 ORG_PATH = config_paths.ORG_PATH
-LEGACY_PATH = config_paths.LEGACY_PATH
-SEED_PATH = config_paths.SEED_PATH
 
 
 class BootstrapError(ValueError):
@@ -22,7 +20,7 @@ class BootstrapError(ValueError):
 
 
 def default_org():
-    """Stable fresh-target defaults, independent of every installed target and any seed file."""
+    """Stable canonical defaults, independent of every installed target."""
     return {
         "version": 3, "root": "main", "nodes": [{
             "id": "main", "parent": None, "children": [], "mode": "Leaf",
@@ -123,7 +121,7 @@ def _assets(source):
 
 
 def runtime_files(org, source=None) -> dict[str, bytes]:
-    """Render runtime assets only, never a live config or seed; safe for readiness staging."""
+    """Render runtime assets only, never a live config; safe for readiness staging."""
     return _runtime_files(org, source, paths_only=False)
 
 
@@ -174,7 +172,7 @@ def _runtime_files(org, source, *, paths_only):
     for name in ("agent-org-design", "agent-org-wiki-curate"):
         copy(f".github/skills/{name}/SKILL.md", assets["skills"] / name / "SKILL.md")
     for name in (
-        "README.md", "bootstrap.py", "config_relocation.py", "org_config.py",
+        "README.md", "bootstrap.py", "org_config.py",
         "owner_validator.py", "requirements.txt", "worktree.py",
     ):
         copy(f".github/agent-org/tools/{name}", assets["root"] / "tools" / name)
@@ -263,22 +261,14 @@ def _exclude_append(existing, entries):
 
 
 def bootstrap_repo(
-    repo, *, root_name=None, scope=None, collaboration=None, storage=None, source=None, migrate_legacy=False,
+    repo, *, root_name=None, scope=None, collaboration=None, storage=None, source=None,
 ) -> dict:
     """Preflight and install without overwriting files, changing the index, or resetting a live tree."""
     repo, common = _git_paths(repo)
-    for relative in (ORG_PATH, LEGACY_PATH, SEED_PATH):
-        problem = _destination_problem(repo, relative)
-        if problem:
-            raise BootstrapError(problem)
-    canonical, legacy = repo / ORG_PATH, repo / LEGACY_PATH
-    if canonical.exists() and legacy.exists():
-        raise BootstrapError("Conflicting live organization files; neither file will be selected or synchronized.")
-    if legacy.exists() and not migrate_legacy:
-        raise BootstrapError("Legacy org.json requires explicit --migrate-legacy; readiness must not migrate live state.")
-    if migrate_legacy and not legacy.exists():
-        raise BootstrapError("--migrate-legacy requires exactly one legacy org.json and no canonical live file.")
-    org_file = legacy if migrate_legacy else canonical
+    problem = _destination_problem(repo, ORG_PATH)
+    if problem:
+        raise BootstrapError(problem)
+    org_file = repo / ORG_PATH
     if org_file.exists():
         org_bytes = org_file.read_bytes()
         try:
@@ -318,16 +308,6 @@ def bootstrap_repo(
         for path in _git(repo, "ls-files", "--cached", "-z").split(b"\0") if path
     }
     conflicts = []
-    installed_seed = repo / SEED_PATH
-    seed_bytes = installed_seed.read_bytes() if installed_seed.exists() else None
-    if seed_bytes is not None:
-        try:
-            if json.loads(seed_bytes.decode("utf-8-sig")) != default_org():
-                conflicts.append(f"{SEED_PATH}: non-default legacy seed; preserve and resolve this collision")
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            conflicts.append(f"{SEED_PATH}: invalid legacy seed; preserve and resolve this collision")
-    if migrate_legacy and storage == "local" and LEGACY_PATH.casefold() in tracked:
-        conflicts.append(f"{LEGACY_PATH}: already tracked; local excludes cannot hide tracked files")
     for kind, values in (("collaboration", ("agents", "hybrid")), ("scope", ("full", "partial"))):
         for value in values:
             relative = f".github/instructions/agent-org.{kind}-{value}.instructions.md"
@@ -374,12 +354,8 @@ def bootstrap_repo(
     exclude_bytes = exclude.read_bytes() if exclude.exists() else b""
     addition, exclude_added = _exclude_append(exclude_bytes, entries)
     created = []
-    moved = False
-    removed_seed = False
     try:
         for relative in pending:
-            if migrate_legacy and relative == ORG_PATH:
-                continue
             path = repo.joinpath(*relative.split("/"))
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("xb") as file:
@@ -389,22 +365,7 @@ def bootstrap_repo(
             exclude.parent.mkdir(parents=True, exist_ok=True)
             with exclude.open("ab") as file:
                 file.write(addition)
-        if migrate_legacy:
-            if legacy.read_bytes() != org_bytes or canonical.exists():
-                raise BootstrapError("Legacy migration candidates changed after preflight.")
-            canonical.parent.mkdir(parents=True, exist_ok=True)
-            legacy.rename(canonical)
-            moved = True
-        if seed_bytes is not None:
-            if installed_seed.read_bytes() != seed_bytes:
-                raise BootstrapError("Legacy seed changed after preflight.")
-            installed_seed.unlink()
-            removed_seed = True
     except (OSError, BootstrapError) as error:
-        if moved and canonical.is_file() and canonical.read_bytes() == org_bytes and not legacy.exists():
-            canonical.rename(legacy)
-        if removed_seed and not installed_seed.exists():
-            installed_seed.write_bytes(seed_bytes)
         for relative in reversed(created):
             path = repo.joinpath(*relative.split("/"))
             if path.is_file() and path.read_bytes() == desired[relative]:
@@ -420,18 +381,16 @@ def bootstrap_repo(
         "existing": existing,
         "org": org,
         "repo": str(repo),
-        "migrated": {"source": LEGACY_PATH, "destination": ORG_PATH} if moved else None,
-        "removed": [SEED_PATH] if removed_seed else [],
     }
 
 
-def check_runtime(repo, *, org_path=ORG_PATH, source=None):
-    """Read-only readiness check. --org org.json is explicit, never implicit discovery."""
+def check_runtime(repo, *, org_path=None, source=None):
+    """Read-only canonical runtime readiness check, with an explicit candidate override."""
     repo, _ = _git_paths(repo)
     try:
         file = config_paths.config_path(repo, explicit=org_path)
         org = json.loads(file.read_text(encoding="utf-8-sig"))
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         raise BootstrapError(str(error)) from error
     desired = runtime_files(org, source)
     drift = [
@@ -439,8 +398,6 @@ def check_runtime(repo, *, org_path=ORG_PATH, source=None):
         if _destination_problem(repo, name) or not (repo / name).is_file()
         or not _same_content((repo / name).read_bytes(), content)
     ]
-    if (repo / SEED_PATH).exists():
-        drift.append(SEED_PATH)
     return {"status": "drift" if drift else "ok", "drift": drift, "org_path": str(file)}
 
 
@@ -452,22 +409,18 @@ def main(argv=None):
     parser.add_argument("--scope", nargs="+", help="managed gitignore globs (default: **)")
     parser.add_argument("--storage", choices=("local", "tracked"))
     parser.add_argument("--source", help="explicit plugin root or installed runtime root")
-    parser.add_argument("--migrate-legacy", action="store_true", help="explicit one-time legacy file move, preserving bytes")
     parser.add_argument("--check-runtime", action="store_true", help="read-only runtime-assets readiness comparison")
-    parser.add_argument("--org", help="explicit config for --check-runtime only (readiness may use org.json)")
+    parser.add_argument("--org", help="explicit candidate config for --check-runtime only")
     args = parser.parse_args(argv)
     try:
         if args.check_runtime:
-            if args.migrate_legacy:
-                raise BootstrapError("--check-runtime never migrates live state.")
-            result = check_runtime(args.repo, org_path=args.org or ORG_PATH, source=args.source)
+            result = check_runtime(args.repo, org_path=args.org, source=args.source)
         else:
             if args.org:
                 raise BootstrapError("--org is only supported by the read-only --check-runtime operation.")
             result = bootstrap_repo(
                 args.repo, root_name=args.root_name, scope=args.scope,
                 collaboration=args.collaboration, storage=args.storage, source=args.source,
-                migrate_legacy=args.migrate_legacy,
             )
     except (BootstrapError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)

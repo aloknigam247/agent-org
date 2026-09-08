@@ -6,9 +6,8 @@ user-invocable: false
 
 # Agent-org design reference
 
-`.github/agent-org/org.json` is the sole live per-target state. There is no installed org seed.
-All ownership paths and globs stay repository-root-relative. Two live candidates are a conflict, not a
-selection or synchronization opportunity; normal runtime never falls back to root `org.json`.
+`.github/agent-org/org.json` is the sole live per-target state.
+All ownership paths and globs stay repository-root-relative.
 
 ## 1. Ownership
 
@@ -36,7 +35,7 @@ for native model invocation.
 
 ### 2.2 Charters and managed scope
 
-[`org.schema.json`](..\..\agent-org\org.schema.json) defines configuration and charter fields, including legacy defaults.
+[`org.schema.json`](..\..\agent-org\org.schema.json) defines configuration and charter fields, including defaults.
 The stable managed scope is independent of a node's effective domain: `domain` minus `excludes`.
 Splitting the root does not reduce the managed area to its retained files.
 
@@ -83,9 +82,8 @@ each self-contained role file under `.github\agent-org\loops`; the
 
 The plugin's `bootstrap` skill defines adoption, installed layout, and local/tracked storage. Stable defaults
 in `bootstrap.default_org()` initialize each fresh target directly at the canonical path, independently of any
-evolved target. Explicit legacy bootstrap migration preserves existing target bytes and storage choices.
-Only the Host-invoked splitter applies the repository-specific ConfigRelocation described in its procedure;
-that approved v4 -> v5 transition is distinct from an add-children SplitProposal.
+evolved target. The organization version is a per-org evolution counter, independent of its file layout.
+Only the Host-invoked splitter applies approved add-children SplitProposals.
 
 ### 2.7 Owner validation
 

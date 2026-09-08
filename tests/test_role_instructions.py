@@ -57,49 +57,52 @@ def test_canonical_template_points_directly_to_substituted_loop():
     assert "{{id}}" in body
 
 
-def test_roles_and_splitter_agree_on_single_live_path_and_distinct_transitions():
+def test_roles_and_splitter_agree_on_canonical_config_and_add_children():
     for role in ("leaf", "parent"):
         text = (PLUGIN / "loops" / f"{role}.md").read_text(encoding="utf-8")
         assert "Read `.github/agent-org/org.json`" in text
         assert "repository root, not the config directory" in text
-        assert "ConfigRelocation" in text
     splitter = (PLUGIN / "agents" / "splitter.md").read_text(encoding="utf-8")
     assert "--split-baseline .github/agent-org/org.json" in splitter
-    assert "--proposal $proposal --acting splitter" in splitter
-    assert "## ConfigRelocation (not add-children)" in splitter
-    assert "main domain entry **in place**" in splitter
+    assert re.findall(r"^## (.+)$", splitter, re.MULTILINE) == ["SplitProposal", "Procedure"]
+    assert "The supported primitive is `add-children`" in splitter
+    assert "at least two new Leaf" in splitter
+    assert "Existing nodes are not renamed or reparented" in splitter
+    assert "Execute only a SplitProposal already approved through the Host's `ask_user` gate" in splitter
     assert "increment `version` once" in splitter
 
 
-@pytest.mark.parametrize("step,target", [(3, "<absolute-shared-worktree>"), (6, "<absolute-source>")])
-def test_activation_docs_install_resolve_bind_before_refresh(step, target):
-    readme = PLUGIN / "tools" / "README.md"
-    installed = PLUGIN.parent / ".github" / "agent-org" / "tools" / "README.md"
-    assert installed.read_bytes() == readme.read_bytes()
-    activation = section(readme.read_text(encoding="utf-8"), "Bounded v4 -> v5 activation (Host / splitter / root)")
-    assert "/plugin install <absolute-" not in activation
-    assert "one Host-controlled tool invocation" in activation
-    phase = re.search(rf"(?ms)^{step}\. .*?(?=^\d+\. |\Z)", activation).group()
-    ordered = [
-        f'client.rpc.plugins.install({{source: "{target}/plugin", workingDirectory: "{target}"}})',
-        "client.rpc.plugins.list()",
-        "client.rpc.extensions.discover()",
-        "python $tool bind-plugin",
-        f'session.rpc.metadata.setWorkingDirectory({{workingDirectory: "{target}"}})',
-        "session.rpc.plugins.reload()",
-    ]
-    for operation in ordered:
-        assert operation in phase
-    positions = [phase.index(operation) for operation in ordered]
-    assert positions == sorted(positions)
+@pytest.mark.parametrize("role", ["leaf", "parent"])
+def test_finish_requires_split_advice_and_an_actionable_proposal_even_for_trivial_tasks(role):
+    text = (PLUGIN / "loops" / f"{role}.md").read_text(encoding="utf-8")
+    finish = section(text, "Finish")
+    assert "As the final step of every task, including trivial or read-only ones" in finish
+    assert "`owner_validator.py --split-advice` with your node id" in finish
+    assert "state its result" in finish
+    assert "when a split is advised return a" in finish
+    assert "SplitProposal using the shape in `.github\\agents\\splitter.md`" in finish
+    assert "a top node has no parent to surface it otherwise" in finish
+    assert "Do not mutate the organization yourself" in finish
 
 
-def test_activation_docs_require_validation_before_integration_and_finish():
+@pytest.mark.parametrize("source,target", [
+    ("agents/splitter.md", "agents/splitter.md"),
+    ("tools/README.md", "agent-org/tools/README.md"),
+    ("instructions/agent-org.instructions.md", "instructions/agent-org.instructions.md"),
+    ("skills/agent-org-design/SKILL.md", "skills/agent-org-design/SKILL.md"),
+    ("org.schema.json", "agent-org/org.schema.json"),
+])
+def test_operational_document_mirrors_match(source, target):
+    assert (PLUGIN / source).read_bytes() == (PLUGIN.parent / ".github" / target).read_bytes()
+
+
+def test_runtime_docs_keep_readiness_and_native_completion_contracts():
     text = (PLUGIN / "tools" / "README.md").read_text(encoding="utf-8")
-    activation = section(text, "Bounded v4 -> v5 activation (Host / splitter / root)")
-    integration = re.search(r"(?ms)^5\. .*?(?=^6\. )", activation).group()
-    final = re.search(r"(?ms)^6\. .*", activation).group()
-    assert "owner_validator.py" in integration
-    assert "owner_validator.py" in final
-    assert integration.index("owner_validator.py") < integration.index("integrate --repo")
-    assert final.index("owner_validator.py") < final.index("finish --repo") < final.index("cleanup --repo")
+    assert re.findall(r"^## (.+)$", text, re.MULTILINE) == ["Bootstrap", "Owner validator", "Session worktree"]
+    assert "--repo . --check-runtime" in section(text, "Bootstrap")
+    assert "Existing integer versions have no minimum" in text
+    assert "per-org evolution" in text
+    assert "### Native child completion annotation" in text
+    assert "native-event footer suffix" in text
+    assert "human approval" in text
+    assert "Source tests alone are not evidence of live delivery" in text

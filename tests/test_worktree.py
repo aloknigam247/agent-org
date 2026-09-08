@@ -144,6 +144,23 @@ def assert_preserved(repo, run):
     assert (ov.git_common_dir(repo) / "agent-org" / "runs" / f"{run['session_id']}.json").is_file()
 
 
+@pytest.mark.parametrize("version", [-10, 0, 1, 3, 4, 5, 100])
+def test_worktree_reads_only_canonical_config_without_a_version_floor(repo, version):
+    org = organization()
+    org["version"] = version
+    save_org(repo, org)
+    unrelated = write(repo, "org.json", "{not live configuration")
+    assert wt._read_org(repo) == org
+    assert unrelated.read_text() == "{not live configuration"
+
+
+def test_worktree_requires_canonical_config(repo):
+    (repo / ORG_PATH).unlink()
+    write(repo, "org.json", json.dumps(organization()))
+    with pytest.raises(FileNotFoundError, match="Missing canonical organization"):
+        wt._read_org(repo)
+
+
 def test_shared_reuse_from_source_child_and_grandchild(repo):
     run = wt.create(repo, "run-shared")
     tree = Path(run["path"])

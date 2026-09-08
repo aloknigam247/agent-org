@@ -288,33 +288,6 @@ def check_split(old_org, new_org, paths=None):
     return {"status": "ok" if not violations else "violations", "violations": violations}
 
 
-def check_config_relocation(old_org, new_org, paths=None):
-    """Validate only the approved v4 -> v5 path/charter edit, never an add-children split."""
-    violations = []
-    try:
-        expected = config_paths.relocated_org(old_org)
-        if not config_paths.same_object(new_org, expected):
-            raise ValueError("Only the exact version/domain/exclusion entries may change; preserve every other field/order.")
-    except (KeyError, TypeError, ValueError) as error:
-        violations.append({"rule": "config-relocation", "evidence": str(error)})
-    if not violations:
-        violations.extend(check_tree(old_org) + check_tree(new_org))
-        if ownership(old_org, config_paths.LEGACY_PATH)["owner"] != "main":
-            violations.append({"rule": "config-relocation", "evidence": "The legacy live file must belong to main."})
-        if ownership(new_org, ORG_PATH)["owner"] != "main":
-            violations.append({"rule": "config-relocation", "evidence": "The canonical live file must belong only to main."})
-        if paths is not None:
-            # The deletion endpoint is owned by the baseline; every other path remains repository-root-relative.
-            before = [p for p in paths if normalize(p) != ORG_PATH]
-            after = [p for p in paths if normalize(p) != config_paths.LEGACY_PATH]
-            violations.extend(check_coverage(old_org, before) + check_coverage(new_org, after))
-            for path in before:
-                if normalize(path) != config_paths.LEGACY_PATH and ownership(old_org, path) != ownership(new_org, path):
-                    violations.append({"rule": "config-relocation", "path": normalize(path),
-                                       "evidence": "Unrelated ownership changed."})
-    return {"status": "ok" if not violations else "violations", "violations": violations}
-
-
 def git_output(root, *args):
     return subprocess.run(
         ["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8", check=True
@@ -475,7 +448,7 @@ def record_acting(payload):
         context = {**previous, **context}
     root, context = hook_workspace(payload, context)
     selected = config_paths.config_path(root, allow_uninstalled=True)
-    if selected is None:
+    if not selected.exists() and not (root / ".github/agent-org").exists():
         return None
     org = json.loads(selected.read_text(encoding="utf-8-sig"))
     if context["node"] not in {n["id"] for n in org["nodes"]} | {"splitter"}:
@@ -693,12 +666,9 @@ def process_hook(payload, org_path=None, mode="warn", after=False):
         context = payload.get("agentOrgContext") or _context_from_map(payload)
         root, context = hook_workspace(payload, context)
         selected = config_paths.config_path(root, explicit=org_path, allow_uninstalled=True)
-        if selected is None:
-            return {}
         if not selected.exists() and not (root / ".github/agent-org").exists():
             return {}
         org = json.loads(selected.read_text(encoding="utf-8-sig"))
-        config_paths.record_provider(payload, root, selected, "postToolUse" if after else "preToolUse")
     except (KeyError, OSError, TypeError, ValueError, subprocess.CalledProcessError) as error:
         message = f"agent-org: configuration audit failed: {error}"
         return {"additionalContext": message} if after else {
@@ -732,13 +702,8 @@ def process_hook(payload, org_path=None, mode="warn", after=False):
     return {} if after else decision
 
 
-def _run_hook(org_path, mode="warn", after=False, provider_hook=None):
+def _run_hook(org_path, mode="warn", after=False):
     payload = json.loads(sys.stdin.read())
-    if provider_hook:
-        payload["agentOrgProvider"] = {
-            "entry": str(Path(provider_hook).resolve()), "protocol": config_paths.PROTOCOL,
-            "fingerprint": config_paths.provider_hash(provider_hook, "command"),
-        }
     print(json.dumps(process_hook(payload, org_path, mode, after)))
     return 0
 
@@ -759,8 +724,6 @@ def main(argv=None):
     parser.add_argument("--size", help="split self-check: report the domain-size proxy for this node id")
     parser.add_argument("--split-baseline",
                         help="validate an add-children split: compare this explicit baseline against --org")
-    parser.add_argument("--relocation-baseline", help="validate only the exact approved v4 -> v5 ConfigRelocation")
-    parser.add_argument("--provider-hook", help=argparse.SUPPRESS)
     parser.add_argument("--window", type=int, default=200000, help="context window in tokens (default 200000)")
     parser.add_argument("--threshold", type=float, default=0.60, help="split fraction of the window (default 0.60)")
     parser.add_argument("--hook", action="store_true",
@@ -791,7 +754,7 @@ def main(argv=None):
         return 0
 
     if args.hook or args.post_hook:
-        return _run_hook(args.org, mode=args.mode, after=args.post_hook, provider_hook=args.provider_hook)
+        return _run_hook(args.org, mode=args.mode, after=args.post_hook)
 
     if args.foreign:
         print(json.dumps({"records": foreign_records(args.root, args.session)}, indent=2))
@@ -823,14 +786,11 @@ def main(argv=None):
         print(json.dumps(result))
         return 0 if result["status"] in {"owned", "unmanaged"} else 1
 
-    if args.split_baseline or args.relocation_baseline:
-        if args.split_baseline and args.relocation_baseline:
-            parser.error("SplitProposal and ConfigRelocation are distinct transitions; choose one baseline.")
-        baseline = config_paths.config_path(args.root, explicit=args.split_baseline or args.relocation_baseline)
+    if args.split_baseline:
+        baseline = config_paths.config_path(args.root, explicit=args.split_baseline)
         old = json.loads(baseline.read_text(encoding="utf-8-sig"))
         paths = [normalize(p) for p in args.paths] if args.paths is not None else git_tracked(args.root)
-        checker = check_split if args.split_baseline else check_config_relocation
-        result = checker(old, org, paths)
+        result = check_split(old, org, paths)
         print(json.dumps(result, indent=2))
         return 0 if result["status"] == "ok" else 1
 

@@ -338,8 +338,7 @@ def check_agent_roles(org, root):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Eval-only agent-org bundle checks")
     parser.add_argument("--org", default=None,
-                        help=f"organization file, absolute or relative to --root (default: {ORG_PATH.as_posix()}; "
-                             "no legacy fallback)")
+                        help=f"organization file, absolute or relative to --root (default: {ORG_PATH.as_posix()})")
     parser.add_argument("--root", default=".", help="repo root")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()

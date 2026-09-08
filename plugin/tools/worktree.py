@@ -251,8 +251,6 @@ def create(repo, session_id=None):
             existing = _load(root, common, session_id)
             _ready(existing)
             return existing
-        if config_paths.active_handover(root) is not None:
-            raise WorktreeError("relocation", "Finish the bounded ConfigRelocation before creating another root run.")
         branch = f"agent-org/{session_id}"
         tree = _safe_path(root, Path(".worktrees") / session_id)
         if tree.exists() or _git(root, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0:
@@ -338,9 +336,6 @@ def _paths(root, baseline):
 
 
 def _gate(org, paths, old):
-    relocation = ov.check_config_relocation(old, org, paths) if old != org else None
-    if relocation is not None and relocation["status"] == "ok":
-        return
     verdict = ov.validate(org, paths)
     if verdict["status"] != "ok":
         raise WorktreeError("coverage", "Final organization coverage is invalid.", verdict["violations"])
@@ -376,9 +371,7 @@ def _local_plan(run, common, org):
 
 
 def _apply_local(source, plan, applied):
-    # Never materialize two local live candidates, even transiently during the move.
-    names = sorted(plan, key=lambda name: (name != config_paths.LEGACY_PATH, name))
-    for name in names:
+    for name in sorted(plan):
         before, after = plan[name]
         if _bytes(source, name) != before:
             raise WorktreeError("overlay-conflict", f"Source overlay changed during integration: {name}")
@@ -428,14 +421,6 @@ def _integrate(root, common, session_id, message):
         _message(message)
         source, tree = Path(run["repo"]), Path(run["path"])
         org = _read_org(tree)
-        if org != run["base_org"] and ov.check_config_relocation(run["base_org"], org)["status"] == "ok":
-            proposal = config_paths.active_handover(root)
-            if (
-                proposal is None or proposal["handover"]["phase"] != "applied"
-                or proposal["handover"]["session_id"] != run["session_id"]
-                or not config_paths.same_object(proposal["proposed_org"], org)
-            ):
-                raise WorktreeError("relocation", "The relocation must first be applied by the approved executor.")
         plan = _local_plan(run, common, org)
         _source_ready(run)
         if _ongoing(tree) or not _ancestor(tree, run["base_sha"], "HEAD"):
@@ -532,8 +517,6 @@ def cleanup(repo, session_id, discard=False):
     with _lock(common):
         run = _load(root, common, session_id)
         source, tree = Path(run["repo"]), Path(run["path"])
-        if config_paths.active_handover(root, allow_expired=True) is not None:
-            raise WorktreeError("relocation", "Finish the active ConfigRelocation before worktree cleanup.")
         records = _worktrees(source)
         if any(path != tree and path.is_relative_to(tree) for path in records):
             raise WorktreeError("worktree", "An unrelated linked worktree is nested here; leave both intact.")

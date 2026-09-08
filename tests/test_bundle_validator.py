@@ -48,36 +48,39 @@ def test_cli_canonical_default_resolves_paths_from_repo_root(repo, file_tree, mo
 
 
 @pytest.mark.parametrize("absolute", [False, True], ids=["repo-relative", "absolute"])
-def test_cli_explicit_legacy_org_override_is_not_a_fallback(repo, file_tree, monkeypatch, capsys, absolute):
-    # Intentional legacy staged-interval setup: only an explicit --org may select the root config.
-    root = repo({"org.json": json.dumps(ORG)})
-    (root / bv.ORG_PATH).unlink()
+@pytest.mark.parametrize("canonical_state", ["present", "missing", "malformed"])
+def test_cli_explicit_org_override(repo, file_tree, monkeypatch, capsys, absolute, canonical_state):
+    candidate = "candidates/organization.json"
+    root = repo({candidate: json.dumps(ORG)})
+    canonical = root / bv.ORG_PATH
+    if canonical_state == "missing":
+        canonical.unlink()
+    elif canonical_state == "malformed":
+        canonical.write_text("{invalid", encoding="utf-8")
     monkeypatch.chdir(file_tree({}))
-    selected = str(root / "org.json") if absolute else "org.json"
+    selected = str(root / candidate) if absolute else candidate
     assert bv.main(["--root", str(root), "--org", selected]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
 
 
-@pytest.mark.parametrize("canonical_state", ["missing", "malformed"])
-def test_cli_never_falls_back_to_legacy_org(repo, canonical_state):
-    # Keep the root file deliberately: this is a no-fallback regression, not an installed duplicate.
-    root = repo({"org.json": json.dumps(ORG)})
-    canonical = root / bv.ORG_PATH
-    if canonical_state == "missing":
-        canonical.unlink()
-        message = r"Legacy org\.json requires explicit bootstrap --migrate-legacy or ConfigRelocation"
-    else:
-        canonical.write_text("{invalid", encoding="utf-8")
-        message = r"Conflicting live organization files: org\.json and \.github/agent-org/org\.json"
-    with pytest.raises(ValueError, match=message):
+def test_cli_requires_canonical_org(repo):
+    root = repo({})
+    (root / bv.ORG_PATH).unlink()
+    with pytest.raises(FileNotFoundError, match=r"Missing canonical organization: .*\.github[/\\]agent-org[/\\]org\.json"):
         bv.main(["--root", str(root)])
 
 
-def test_cli_rejects_conflicting_live_orgs(repo):
-    # Intentionally model a legacy/canonical collision; even identical contents remain ambiguous.
-    root = repo({"org.json": json.dumps(ORG)})
-    with pytest.raises(ValueError, match="Conflicting live organization files"):
+def test_cli_rejects_malformed_canonical_org(repo):
+    root = repo({})
+    (root / bv.ORG_PATH).write_text("{invalid", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
         bv.main(["--root", str(root)])
+
+
+def test_cli_ignores_unrelated_root_file(repo, capsys):
+    root = repo({"org.json": "{not an installed organization"})
+    assert bv.main(["--root", str(root)]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
 
 
 def test_front_matter_scalar_and_lists():
@@ -316,15 +319,15 @@ def test_canonical_org_sources_preserve_repo_relative_freshness(repo, artifact):
 @pytest.mark.parametrize("artifact", ["wiki/a/layout.md", ".github/skills/agent-org-a-refresh/SKILL.md"])
 def test_sources_are_not_rebased_to_the_org_directory(repo, artifact):
     root = repo({
+        ".github/agent-org/settings.json": "{}",
         artifact: (
             "---\nname: agent-org-a-refresh\nowner: a\nuser-invocable: false\n"
-            "sources: [org.json]\n---\n"
+            "sources: [settings.json]\n---\n"
         ),
     })
-    # The canonical file exists, but this stale repository-root source does not.
-    assert (root / bv.ORG_PATH).is_file()
-    assert not (root / "org.json").exists()
-    assert any("dangling source 'org.json'" in evidence for evidence in evidences(bv.check_bundle(ORG, root)))
+    # A file beside the organization does not satisfy a repository-root source.
+    assert not (root / "settings.json").exists()
+    assert any("dangling source 'settings.json'" in evidence for evidence in evidences(bv.check_bundle(ORG, root)))
 
 
 # --- SO5 freshness: a source changed but the artifact citing it was not re-touched ------------------

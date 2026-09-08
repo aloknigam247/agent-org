@@ -8,8 +8,8 @@ design's examples. Deterministic failures must be resolved before interpreting a
 | Behavior | Deterministic coverage | Agent scenario |
 | --- | --- | --- |
 | Bootstrap on an existing repo without overwriting work | `tests/test_bootstrap.py` | Bootstrap skill adoption |
-| One installed `.github/agent-org/org.json`; explicit legacy migration and conflict rejection | Bootstrap migration tests; eval canonical-fixture and no-fallback regressions | All installed-layout fixtures |
-| Config relocation does not rebase globs, domain files, or bundle sources | Canonical bundle CLI/root-path and freshness regressions; fixture coverage | Fixture preflight |
+| Canonical `.github/agent-org/org.json` discovery and explicit CLI overrides | Bundle CLI default/override checks; eval canonical-fixture regressions | All installed-layout fixtures |
+| Globs, domain files, and bundle sources remain repository-root-relative | Canonical bundle CLI/root-path and freshness regressions; fixture coverage | Fixture preflight |
 | Full/partial scope combined with agent-only/hybrid collaboration | Bootstrap combinations and `tests/test_runtime_policy.py` | `partial-unmanaged-write` |
 | Renamed root and selected instruction profiles | Bootstrap output and command construction | `shared-session-routing`, `host-entry` |
 | Parent denied direct or deeper descendant writes | Relationship matrix, multi-file patch checks, denied-audit grader | `parent-descendant-denied` |
@@ -31,9 +31,8 @@ design's examples. Deterministic failures must be resolved before interpreting a
   Reject no-op results when the fixture requires changes. Keep baseline ownership separate from final validation.
 - **Organization layout:** Read baseline and final organizations only at `.github/agent-org/org.json`. Fixtures
   supply their own topology/settings, not defaults from the evolved development checkout. `seed/` is fixture setup;
-  an intentionally legacy root config belongs to labeled migration or no-fallback tests, not a duplicate installed
-  config. Run migration checks in disposable repositories, never by bootstrapping the shared development worktree.
-  Keep charter globs, manifest paths, and freshness sources repository-root-relative.
+  a missing or malformed canonical file is a fixture error. Keep charter globs, manifest paths, and freshness
+  sources repository-root-relative.
 - **Policy:** Assert both a denied attempt and an unchanged target when testing prevention. Assert successful output
   and a completed audit record when testing warning mode. Foreign records must match the actor, owner, and run.
 - **Roles:** Promoting a Leaf changes its agent definition's Markdown-body `loop:` reference to the Parent file;
