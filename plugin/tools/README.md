@@ -91,6 +91,33 @@ python .github\agent-org\tools\owner_validator.py --checkpoint --root .
 
 Hook configuration comes from `hooks.json`; each role file defines boundary policy and its limitations.
 
+### Native child completion annotation
+
+The existing extension appends completion information to the parent's tool result, not to a SessionEnd
+summary. Sync `task` results correlate native `toolTelemetry.restrictedProperties.agent_id` with the
+completion event's top-level `agentId`; hook input need not contain `toolCallId`. Background launches are
+not final responses; completed `read_agent` results correlate by `toolArgs.agent_id`. Missing identity
+leaves the original result untouched and adds an explicit context warning. Child body text and display
+names never select a report.
+
+The event handler publishes its report/readiness promise before asynchronous usage recording. A matching
+post hook awaits it before asking the existing `split_advice` oracle, using that oracle's defaults. Native
+completion totals are authoritative; accumulated usage can be partial, and absent usage is unavailable,
+not zero. Tokens are input/output usage, **not billed AI credits**. A split remains a proposal requiring
+human approval; this annotation changes neither topology nor charters.
+
+Duplicate project/plugin hooks are idempotent **per chained output**: the next provider preserves the
+preceding provider's modified result using its native-event footer suffix. There is no delivery
+acknowledgement, so no persistent completion claim or permanent "reported" flag is consumed ahead of
+delivery. A fresh raw reread can receive the same current completion once in that output; rereading an
+already annotated result does not append again. A new native start, child prompt, or permitted explicit
+`write_agent` target invalidates the prior report; async work for that superseded report cannot annotate
+the new turn. Session bindings remain immutable until SessionEnd. Old claim files are unused, not migrated.
+
+Worktree tests do not activate these changes in a running provider. After root integration, the Host must
+install, perform supported reload, inspect both providers, and verify native sync/background responses
+through their actual hook pipeline. Source tests alone are not evidence of live delivery.
+
 ## Session worktree
 
 Creation requires a clean source worktree on a named branch with an existing commit. After tracked bootstrap,
