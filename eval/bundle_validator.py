@@ -1,6 +1,7 @@
 """Eval-only bundle integrity and freshness checks.
 
-Given a repo root and its ``org.json``, verify the static bundle invariants that need no agent judgement:
+Given a repo root and its ``.github/agent-org/org.json``, verify the static bundle invariants that
+need no agent judgement. Charter globs and bundle sources remain relative to the repository root:
 
 - **SO2 Bundle presence** — every live node has an agent-def ``.github/agents/<id>.md``.
 - **SO3 Single-writer** — an artifact's declared ``owner`` matches its immutable charter owner.
@@ -24,9 +25,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
 import owner_validator as ov  # noqa: E402
+import org_config  # noqa: E402
 
 BUNDLE_KINDS = ("tools", "wiki")
 KERNEL_SKILLS = {"agent-org-design", "agent-org-wiki-curate"}
+ORG_PATH = Path(org_config.ORG_PATH)
 
 
 def _front_matter(text: str) -> dict:
@@ -334,11 +337,15 @@ def check_agent_roles(org, root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Eval-only agent-org bundle checks")
-    parser.add_argument("--org", default="org.json", help="path to org.json")
+    parser.add_argument("--org", default=None,
+                        help=f"organization file, absolute or relative to --root (default: {ORG_PATH.as_posix()}; "
+                             "no legacy fallback)")
     parser.add_argument("--root", default=".", help="repo root")
     args = parser.parse_args(argv)
-    org = json.loads(Path(args.org).read_text(encoding="utf-8"))
-    result = check_bundle(org, args.root)
+    root = Path(args.root).resolve()
+    org_path = org_config.config_path(root, explicit=args.org)
+    org = json.loads(org_path.read_text(encoding="utf-8-sig"))
+    result = check_bundle(org, root)
     print(json.dumps(result, indent=2))
     return 0 if result["status"] == "ok" else 1
 

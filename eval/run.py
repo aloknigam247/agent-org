@@ -8,9 +8,10 @@ runaway count, and calibration pairs for the split threshold.
 
 A fixture is a directory `eval/fixtures/<case>/` with:
   - `manifest.yml` — the case definition (see eval/README.md).
-  - `seed/`        — the repo state under test (org.json + domain files); the plugin's seed agents,
-                     Host-manual instructions, and `org.schema.json` are materialized by the runner
-                     (reproducing a bootstrapped repo) so fixtures stay small.
+  - `seed/`        — independent fixture setup: `.github/agent-org/org.json` + repo-root domain files.
+                     The runner generates agents from that fixture org and materializes the plugin's
+                     instructions, schema, and runtime (reproducing a bootstrapped repo). This setup
+                     directory is not an installed runtime seed or a duplicate live organization.
 
 Auth: the harness's Copilot subprocess cannot use the parent session's Entra auth, so it sets
 `COPILOT_GITHUB_TOKEN` from `gh auth token` (the local GitHub login).
@@ -44,6 +45,7 @@ import worktree  # noqa: E402
 
 KERNEL = Path(__file__).resolve().parent.parent
 META_AGENTS = {"splitter"}  # kernel meta-agents that are not org nodes but are valid `agent` targets
+ORG_PATH = bv.ORG_PATH
 
 
 def sh(args, cwd=None, env=None, timeout=None):
@@ -53,10 +55,26 @@ def sh(args, cwd=None, env=None, timeout=None):
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
+def _read_org(root: Path):
+    """Read the installed organization only; never infer a root-level legacy fallback."""
+    path = bv.org_config.config_path(root, explicit=ORG_PATH)
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _fixture_org(fixture: Path):
+    seed = fixture / "seed"
+    if (seed / "org.json").exists():
+        raise ValueError(
+            f"legacy seed/org.json is not an installed fixture layout; use seed/{ORG_PATH.as_posix()} "
+            "only, and exercise explicit bootstrap migration in a separate legacy setup"
+        )
+    return _read_org(seed)
+
+
 def build_sandbox(fixture: Path, dest: Path, prepare=None):
     """Use the same runtime assembly as bootstrap, then overlay the independent fixture's state."""
     seed = fixture / "seed"
-    org = json.loads((seed / "org.json").read_text(encoding="utf-8"))
+    org = _fixture_org(fixture)
     for relative, content in bootstrap.runtime_files(org, KERNEL / "plugin").items():
         target = dest / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,9 +116,9 @@ def preflight(fixture: Path, manifest):
     sb = Path(tempfile.mkdtemp(prefix="preflight-"))
     try:
         try:
-            org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+            org = _fixture_org(fixture)
         except (OSError, ValueError) as exc:
-            return [f"seed org.json unreadable: {exc}"]
+            return [f"fixture organization unreadable: {exc}"]
         problems += _schema_problems(org)
         if problems:
             return problems
@@ -246,12 +264,12 @@ def _infra_error(events):
     return None
 
 
-HOST_AGENT = "host"  # invoke the Host session itself (no --agent), so it routes to main per its manual
+HOST_AGENT = "host"  # invoke the Host session itself (no --agent), so it resolves the fixture's org.root
 
 
 def build_invoke_cmd(manifest, sandbox: Path, model, effort, usage: Path, acting=None, run_id=None):
-    """The `copilot` argv for a run. `agent: host` omits --agent so the Host (copilot-instructions.md)
-    performs the hardcoded entry to main — the only way to exercise the Host->main entry invariant. When
+    """The `copilot` argv for a run. `agent: host` omits --agent so the installed Host instructions
+    route to the canonical fixture's org.root — exercising Host entry rather than bypassing it. When
     `acting` is given, prepend the `AgentOrgActingNode:` marker to the prompt (simulating the parent's
     injection) so the record-acting hook can attribute this session's writes on disk."""
     agent = manifest.get("agent", "main")
@@ -543,7 +561,7 @@ def install_hook_home(home: Path, mode: str = "warn"):
 
 def _acting_node(fixture: Path, manifest):
     """Parents need identity too: their writes to descendant-owned paths must be denied."""
-    org = json.loads((fixture / "seed" / "org.json").read_text(encoding="utf-8"))
+    org = _fixture_org(fixture)
     agent = manifest.get("agent", org["root"])
     if agent == HOST_AGENT:
         return None
@@ -574,14 +592,14 @@ def run_case(fixture: Path, repeats: int, model, effort, keep: bool, judge: bool
         workspace = None
         try:
             baseline_sha = build_sandbox(fixture, sandbox, prepare)
-            baseline_org = json.loads((sandbox / "org.json").read_text(encoding="utf-8"))
+            baseline_org = _read_org(sandbox)
             workspace = worktree.create(sandbox, run_id)
             execution = Path(workspace["path"])
             baseline_files = snapshot(execution)
             result = invoke(manifest, execution, run_env, model, effort, manifest.get("timeout", 300), acting, run_id)
             result.update(capture(execution, baseline_sha, baseline_files))
             try:
-                final_org = json.loads((execution / "org.json").read_text(encoding="utf-8"))
+                final_org = _read_org(execution)
             except (OSError, ValueError):
                 final_org = None
             result["grade"] = graders.grade(

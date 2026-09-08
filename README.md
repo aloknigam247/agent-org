@@ -22,11 +22,17 @@ layout. Bootstrap installs operational skills in `.github\skills`; run `/skills 
 added during the current session. Configuration and compatibility defaults are defined in the
 [schema](plugin\org.schema.json).
 
+The only installed organization file is `.github\agent-org\org.json`. Fresh bootstrap initializes it
+directly, without installing an organization seed copy. An explicit bootstrap migration preserves an
+unambiguous legacy root `org.json`; if both live paths exist, bootstrap reports a conflict rather than
+choosing or reseeding. Normal runtime discovery uses only the canonical installed path. Configuration paths
+and ownership globs remain repository-root-relative, not relative to the config directory.
+
 ## Use
 
-The Host resolves the configured root from the target's `org.json`. Each node explicitly reads a small Leaf or
-Parent operating file through a `loop:` reference in its definition's Markdown body. Each role file is
-self-contained. The [full design](plugin\skills\agent-org-design\SKILL.md) is an on-demand reference.
+The Host resolves the configured root from the target's `.github\agent-org\org.json`. Each node explicitly
+reads a small Leaf or Parent operating file through a `loop:` reference in its definition's Markdown body.
+Each role file is self-contained. The [full design](plugin\skills\agent-org-design\SKILL.md) is an on-demand reference.
 
 The root creates one session worktree and passes its path to all descendants. Parents delegate descendant-owned
 implementation and reconcile foreign changes before root integration. See the
@@ -39,7 +45,8 @@ written rules must be distinguished from verified behavior in the actual Copilot
 
 ## Repository
 
-- `plugin\` is the installable kernel; `plugin\seed\org.json` is its canonical bootstrap seed, not live shared state.
+- `plugin\` is the installable kernel. Bootstrap defines stable defaults; each target owns its live
+  `.github\agent-org\org.json` rather than sharing or retaining a seed organization.
 - `eval\` and `tests\` contain development validation, including the evaluation-only bundle validator.
 
 See the [evaluation guide](eval\README.md) and [test plan](eval\TEST-PLAN.md) for verification scope.

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 PLUGIN = Path(__file__).resolve().parents[1] / "plugin"
+ORG_PATH = ".github/agent-org/org.json"
 
 
 @pytest.fixture
@@ -13,19 +14,19 @@ def repo(tmp_path):
     subprocess.run(["git", "init", "-q", "-b", "trunk", str(tmp_path)], check=True)
     tool_dir = tmp_path / ".github" / "agent-org" / "tools"
     tool_dir.mkdir(parents=True)
-    for name in ("hook.ps1", "owner_validator.py"):
+    for name in ("hook.ps1", "owner_validator.py", "org_config.py"):
         shutil.copy2(PLUGIN / "tools" / name, tool_dir / name)
     org = {
         "version": 3, "root": "coordinator", "scope": ["**"], "nodes": [
             {"id": "coordinator", "parent": None, "children": ["catalog", "orders"], "mode": "Parent",
-             "charter": {"domain": [".github/**", "org.json"], "concerns": [], "excludes": []}},
+             "charter": {"domain": [".github/**"], "concerns": [], "excludes": []}},
             {"id": "catalog", "parent": "coordinator", "children": [], "mode": "Leaf",
              "charter": {"domain": ["catalog/**"], "concerns": [], "excludes": []}},
             {"id": "orders", "parent": "coordinator", "children": [], "mode": "Leaf",
              "charter": {"domain": ["orders/**"], "concerns": [], "excludes": []}},
         ],
     }
-    (tmp_path / "org.json").write_text(json.dumps(org), encoding="utf-8")
+    (tmp_path / ORG_PATH).write_text(json.dumps(org), encoding="utf-8")
     return tmp_path
 
 

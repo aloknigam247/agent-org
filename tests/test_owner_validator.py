@@ -18,7 +18,7 @@ TOOL = Path(__file__).resolve().parent.parent / "plugin" / "tools" / "owner_vali
 
 @pytest.fixture
 def git_repo(sandbox):
-    return lambda files, org_dict: sandbox({"org.json": json.dumps(org_dict), **files})
+    return lambda files, org_dict: sandbox({ov.ORG_PATH: json.dumps(org_dict), **files})
 
 
 def node(nid, domain=None, excludes=None, parent=None, children=None, mode=None):
@@ -387,7 +387,7 @@ def test_cli_owner_exit_codes(git_repo):
     org_one = {"version": 3, "root": "main", "nodes": [
         {"id": "main", "charter": {"domain": ["a/**"]}, "parent": None, "children": [], "mode": "Leaf"}]}
     repo = git_repo({"a/x.txt": "1"}, org_one)
-    org_path = str(repo / "org.json")
+    org_path = str(repo / ov.ORG_PATH)
     owned = subprocess.run([sys.executable, str(TOOL), "--owner", "a/x.txt", "--org", org_path],
                            capture_output=True, text=True)
     assert owned.returncode == 0, owned.stderr
@@ -557,7 +557,7 @@ def test_hook_cli_warn_allows_and_logs_foreign(git_repo):
     # record 'a' as the acting node for session S2, then S2 writes into b/ (foreign)
     ov.record_acting({"sessionId": "S2", "cwd": str(repo), "prompt": "AgentOrgActingNode: a"})
     pl = json.dumps(_payload("edit", str(repo / "b" / "x.py"), str(repo), sid="S2"))
-    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / "org.json")],
+    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / ov.ORG_PATH)],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout   # warn = allow
     log = repo / ".git" / "agent-org" / "foreign" / "S2" / "S2.jsonl"
@@ -571,16 +571,16 @@ def test_hook_cli_enforce_denies_foreign(git_repo):
     repo = git_repo({"a/keep.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     ov.record_acting({"sessionId": "S3", "cwd": str(repo), "prompt": "AgentOrgActingNode: a"})
     pl = json.dumps(_payload("edit", str(repo / "b" / "x.py"), str(repo), sid="S3"))
-    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--mode", "enforce", "--org", str(repo / "org.json")],
+    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--mode", "enforce", "--org", str(repo / ov.ORG_PATH)],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout)["permissionDecision"] == "deny", p.stdout
 
 
 def test_hook_cli_allows_when_no_org(tmp_path):
-    # a non-agent-org repo (no org.json) must never be disturbed by the plugin hook
+    # A non-agent-org repo (no installed configuration) must not be disturbed by the plugin hook.
     d = tmp_path
     pl = json.dumps(_payload("create", str(d / "anything.txt"), str(d)))
-    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(d / "org.json")],
+    p = subprocess.run([sys.executable, str(TOOL), "--hook"],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout) == {}, p.stdout
 
