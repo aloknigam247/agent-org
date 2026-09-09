@@ -30,7 +30,7 @@ for (const [provider, makeOracle, find, tools] of [
     assert.throws(() => find(repo), /missing installed owner oracle/);
     const toolDir = path.join(installed, "tools");
     fs.mkdirSync(toolDir);
-    for (const name of ["owner_validator.py", "org_config.py"]) {
+    for (const name of ["owner_validator.py"]) {
       fs.copyFileSync(new URL(name, tools), path.join(toolDir, name));
     }
     assert.equal(fs.realpathSync.native(find(repo).directory), fs.realpathSync.native(repo));

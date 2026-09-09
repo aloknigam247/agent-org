@@ -25,11 +25,10 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugin" / "tools"))
 import owner_validator as ov  # noqa: E402
-import org_config  # noqa: E402
 
 BUNDLE_KINDS = ("tools", "wiki")
 KERNEL_SKILLS = {"agent-org-design", "agent-org-wiki-curate"}
-ORG_PATH = Path(org_config.ORG_PATH)
+ORG_PATH = Path(".github/agent-org/org.json")
 
 
 def _front_matter(text: str) -> dict:
@@ -342,7 +341,10 @@ def main(argv=None):
     parser.add_argument("--root", default=".", help="repo root")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
-    org_path = org_config.config_path(root, explicit=args.org)
+    org_path = root / (ORG_PATH if args.org is None else Path(args.org))
+    if not org_path.is_file():
+        label = "canonical organization" if args.org is None else "organization candidate"
+        raise FileNotFoundError(f"Missing {label}: {org_path}")
     org = json.loads(org_path.read_text(encoding="utf-8-sig"))
     result = check_bundle(org, root)
     print(json.dumps(result, indent=2))

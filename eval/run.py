@@ -56,7 +56,9 @@ def sh(args, cwd=None, env=None, timeout=None):
 
 def _read_org(root: Path):
     """Read the installed organization at its canonical repository-relative path."""
-    path = bv.org_config.config_path(root, explicit=ORG_PATH)
+    path = Path(root).resolve() / ORG_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing organization candidate: {path}")
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 

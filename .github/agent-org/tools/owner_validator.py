@@ -29,10 +29,7 @@ import sys
 import uuid
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import org_config as config_paths  # noqa: E402
-
-ORG_PATH = config_paths.ORG_PATH
+ORG_PATH = ".github/agent-org/org.json"
 
 try:  # pathspec >= 0.11 exposes GitIgnoreSpec; older versions use the from_lines factory.
     from pathspec import GitIgnoreSpec
@@ -55,6 +52,14 @@ except ImportError:  # pragma: no cover - version fallback
             )
         )
         sys.exit(2)
+
+
+def _org_file(root, *, explicit=None, allow_uninstalled=False):
+    selected = Path(root).resolve() / (ORG_PATH if explicit is None else explicit)
+    if selected.is_file() or allow_uninstalled:
+        return selected
+    label = "canonical organization" if explicit is None else "organization candidate"
+    raise FileNotFoundError(f"Missing {label}: {selected}")
 
 
 def normalize(path: str) -> str:
@@ -447,7 +452,7 @@ def record_acting(payload):
                 raise ValueError(f"a session cannot change its bound {key}")
         context = {**previous, **context}
     root, context = hook_workspace(payload, context)
-    selected = config_paths.config_path(root, allow_uninstalled=True)
+    selected = _org_file(root, allow_uninstalled=True)
     if not selected.exists() and not (root / ".github/agent-org").exists():
         return None
     org = json.loads(selected.read_text(encoding="utf-8-sig"))
@@ -665,7 +670,7 @@ def process_hook(payload, org_path=None, mode="warn", after=False):
     try:
         context = payload.get("agentOrgContext") or _context_from_map(payload)
         root, context = hook_workspace(payload, context)
-        selected = config_paths.config_path(root, explicit=org_path, allow_uninstalled=True)
+        selected = _org_file(root, explicit=org_path, allow_uninstalled=True)
         if not selected.exists() and not (root / ".github/agent-org").exists():
             return {}
         org = json.loads(selected.read_text(encoding="utf-8-sig"))
@@ -760,7 +765,7 @@ def main(argv=None):
         print(json.dumps({"records": foreign_records(args.root, args.session)}, indent=2))
         return 0
 
-    org_path = config_paths.config_path(args.root, explicit=args.org)
+    org_path = _org_file(args.root, explicit=args.org)
     org = json.loads(org_path.read_text(encoding="utf-8-sig"))
 
     if args.checkpoint:
@@ -787,7 +792,7 @@ def main(argv=None):
         return 0 if result["status"] in {"owned", "unmanaged"} else 1
 
     if args.split_baseline:
-        baseline = config_paths.config_path(args.root, explicit=args.split_baseline)
+        baseline = _org_file(args.root, explicit=args.split_baseline)
         old = json.loads(baseline.read_text(encoding="utf-8-sig"))
         paths = [normalize(p) for p in args.paths] if args.paths is not None else git_tracked(args.root)
         result = check_split(old, org, paths)

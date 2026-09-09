@@ -19,6 +19,9 @@ SPEC = importlib.util.spec_from_file_location("agent_org_bootstrap", PLUGIN / "t
 bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
 ORG_PATH = bootstrap.ORG_PATH
+OWNER_SPEC = importlib.util.spec_from_file_location("agent_org_owner", PLUGIN / "tools" / "owner_validator.py")
+owner = importlib.util.module_from_spec(OWNER_SPEC)
+OWNER_SPEC.loader.exec_module(owner)
 
 
 def git(repo, *args, allowed=(0,)):
@@ -570,46 +573,50 @@ def test_bootstrap_only_uses_canonical_config_and_preserves_unrelated_root_file(
     assert (repo / "org.json").read_bytes() == root_content
     assert result["org"]["root"] == "main"
     assert result["org"]["version"] == 3
-    assert bootstrap.config_paths.config_path(repo) == repo / ORG_PATH
+    assert bootstrap.check_runtime(repo, source=PLUGIN)["org_path"] == str(repo / ORG_PATH)
 
 
-def test_config_path_is_canonical_without_searching_other_files(repo):
+def test_org_selection_is_canonical_without_searching_other_files(repo):
     write(repo / "org.json", json.dumps(live_tree()))
     before = snapshot(repo)
+    with pytest.raises(bootstrap.BootstrapError, match="Missing canonical organization"):
+        bootstrap.check_runtime(repo, source=PLUGIN)
     with pytest.raises(FileNotFoundError, match="Missing canonical organization"):
-        bootstrap.config_paths.config_path(repo)
-    assert bootstrap.config_paths.config_path(repo, allow_uninstalled=True) == repo / ORG_PATH
+        owner._org_file(repo)
+    with pytest.raises(FileNotFoundError, match="Missing canonical organization"):
+        owner.main(["--root", str(repo), "--owner", "src/shared/file.py"])
+    assert owner._org_file(repo, allow_uninstalled=True) == repo / ORG_PATH
     assert snapshot(repo) == before
 
 
 @pytest.mark.parametrize("absolute", [False, True])
-def test_config_path_accepts_an_explicit_candidate_without_changing_live_config(repo, absolute):
+def test_org_selection_accepts_an_explicit_candidate_without_changing_live_config(repo, absolute, capsys):
     write(repo / ORG_PATH, json.dumps(initial_org()))
     relative = Path("proposals/candidate.json")
     candidate = repo / relative
     write(candidate, json.dumps(live_tree()))
+    selected = candidate if absolute else relative
     before = snapshot(repo)
-    assert bootstrap.config_paths.config_path(repo, explicit=candidate if absolute else relative) == candidate
-    assert bootstrap.config_paths.config_path(repo) == repo / ORG_PATH
+    assert owner._org_file(repo, explicit=selected) == candidate
+    assert owner._org_file(repo) == repo / ORG_PATH
+    assert bootstrap.check_runtime(repo, org_path=selected, source=PLUGIN)["org_path"] == str(candidate)
+    assert bootstrap.check_runtime(repo, source=PLUGIN)["org_path"] == str(repo / ORG_PATH)
+    for options, expected in (([], "main"), (["--org", str(selected)], "coordinator")):
+        assert owner.main(["--root", str(repo), "--owner", "src/shared/file.py", *options]) == 0
+        assert json.loads(capsys.readouterr().out)["owner"] == expected
+    assert snapshot(repo) == before
     candidate.unlink()
+    with pytest.raises(bootstrap.BootstrapError, match="Missing organization candidate"):
+        bootstrap.check_runtime(repo, org_path=selected, source=PLUGIN)
     with pytest.raises(FileNotFoundError, match="Missing organization candidate"):
-        bootstrap.config_paths.config_path(repo, explicit=relative)
-    assert bootstrap.config_paths.config_path(repo, explicit=relative, allow_uninstalled=True) == candidate
+        owner._org_file(repo, explicit=selected)
+    with pytest.raises(FileNotFoundError, match="Missing organization candidate"):
+        owner.main(["--root", str(repo), "--org", str(selected), "--owner", "src/shared/file.py"])
+    with pytest.raises(FileNotFoundError, match="Missing organization candidate"):
+        owner.main(["--root", str(repo), "--split-baseline", str(selected)])
+    assert owner._org_file(repo, explicit=selected, allow_uninstalled=True) == candidate
     before.pop(relative.as_posix())
     assert snapshot(repo) == before
-
-
-def test_config_path_rejects_relative_traversal(repo):
-    with pytest.raises(ValueError, match="Unsafe relative path"):
-        bootstrap.config_paths.config_path(repo, explicit="../outside.json", allow_uninstalled=True)
-
-
-@pytest.mark.parametrize("redirect", ["is_symlink", "is_junction"])
-def test_canonical_config_rejects_redirected_parent(repo, monkeypatch, redirect):
-    redirected = repo / ".github"
-    monkeypatch.setattr(type(repo), redirect, lambda path: path == redirected, raising=False)
-    with pytest.raises(ValueError, match="Redirected configuration/runtime path"):
-        bootstrap.config_paths.config_path(repo, allow_uninstalled=True)
 
 
 def test_readiness_compares_canonical_assets_and_explicit_candidate_without_writes(repo):

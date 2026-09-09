@@ -19,10 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bootstrap  # noqa: E402
-import org_config as config_paths  # noqa: E402
 import owner_validator as ov  # noqa: E402
 
-ORG_PATH = config_paths.ORG_PATH
+ORG_PATH = ".github/agent-org/org.json"
 
 
 class WorktreeError(ValueError):
@@ -56,7 +55,7 @@ def _root(repo):
     return root
 
 
-def _safe_path(root, relative):
+def _managed_path(root, relative):
     relative = Path(relative)
     if relative.is_absolute() or ".." in relative.parts:
         raise WorktreeError("path", f"Unsafe relative path: {relative}")
@@ -67,27 +66,30 @@ def _safe_path(root, relative):
 
 
 def _read_org(root):
-    org = json.loads(config_paths.config_path(root).read_text(encoding="utf-8-sig"))
+    file = Path(root) / ORG_PATH
+    if not file.is_file():
+        raise FileNotFoundError(f"Missing canonical organization: {file}")
+    org = json.loads(file.read_text(encoding="utf-8-sig"))
     if not isinstance(org, dict) or not isinstance(org.get("nodes"), list):
         raise WorktreeError("organization", "org.json must contain an organization object with a nodes array.")
     return org
 
 
 def _state(common):
-    state = _safe_path(common, "agent-org")
+    state = _managed_path(common, "agent-org")
     state.mkdir(exist_ok=True)
     return state
 
 
 def _record_path(common, session_id):
-    directory = _safe_path(_state(common), "runs")
+    directory = _managed_path(_state(common), "runs")
     directory.mkdir(exist_ok=True)
-    return _safe_path(directory, f"{_session_id(session_id)}.json")
+    return _managed_path(directory, f"{_session_id(session_id)}.json")
 
 
 @contextmanager
 def _lock(common):
-    path = _safe_path(_state(common), "integration.lock")
+    path = _managed_path(_state(common), "integration.lock")
     token = f"{os.getpid()}:{uuid.uuid4()}"
     try:
         handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -132,7 +134,7 @@ def _load(root, common, session_id):
         run["session_id"] != session_id
         or not source.is_absolute()
         or source.resolve() != source
-        or tree != _safe_path(source, Path(".worktrees") / session_id)
+        or tree != _managed_path(source, Path(".worktrees") / session_id)
         or root not in (source, tree)
         or run["branch"] != f"agent-org/{session_id}"
         or ov.git_root(source) != source
@@ -148,8 +150,8 @@ def _load(root, common, session_id):
         raise WorktreeError("session", "The descriptor has an invalid base commit.")
     _git(source, "check-ref-format", "--branch", run["base_branch"])
     for name in set(run["local_files"]) | set(run.get("runtime_files", [])):
-        _safe_path(source, name)
-        _safe_path(tree, name)
+        _managed_path(source, name)
+        _managed_path(tree, name)
     return run
 
 
@@ -178,7 +180,7 @@ def _overlay_names(root, *orgs, runtime_names=None):
         for node in org.get("nodes", []):
             node_id = _session_id(node["id"])
             names.add(f".github/agents/{node_id}.md")
-    directory = _safe_path(root, ".github/instructions")
+    directory = _managed_path(root, ".github/instructions")
     if directory.exists():
         names.update(path.relative_to(root).as_posix() for path in directory.glob("agent-org*.instructions.md"))
     return {name for name in names if not _ephemeral(name)}
@@ -191,7 +193,7 @@ def _overlay_allowed(name, known):
 
 
 def _bytes(root, name):
-    path = _safe_path(root, name)
+    path = _managed_path(root, name)
     return path.read_bytes() if path.exists() else None
 
 
@@ -213,7 +215,7 @@ def _write_bytes(path, data):
 
 
 def _exclude(common, patterns):
-    path = _safe_path(common, Path("info") / "exclude")
+    path = _managed_path(common, Path("info") / "exclude")
     content = path.read_text(encoding="utf-8") if path.exists() else ""
     missing = sorted(set(patterns) - set(content.splitlines()))
     if missing:
@@ -252,7 +254,7 @@ def create(repo, session_id=None):
             _ready(existing)
             return existing
         branch = f"agent-org/{session_id}"
-        tree = _safe_path(root, Path(".worktrees") / session_id)
+        tree = _managed_path(root, Path(".worktrees") / session_id)
         if tree.exists() or _git(root, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0:
             raise WorktreeError("session", "The session path or branch already exists without a matching descriptor.")
         base_branch = _git(root, "symbolic-ref", "--quiet", "HEAD", check=False)
@@ -287,7 +289,7 @@ def create(repo, session_id=None):
         }
         ov.write_json(record, run)
         for name, data in copied.items():
-            target = _safe_path(tree, name)
+            target = _managed_path(tree, name)
             if target.exists():
                 raise WorktreeError("overlay", f"Refusing to replace an existing worktree artifact: {name}")
             _write_bytes(target, data)
@@ -376,7 +378,7 @@ def _apply_local(source, plan, applied):
         if _bytes(source, name) != before:
             raise WorktreeError("overlay-conflict", f"Source overlay changed during integration: {name}")
         if before != after:
-            _write_bytes(_safe_path(source, name), after)
+            _write_bytes(_managed_path(source, name), after)
             applied[name] = (before, after)
 
 
@@ -384,7 +386,7 @@ def _restore_local(source, applied):
     for name, (before, after) in reversed(list(applied.items())):
         if _bytes(source, name) != after:
             raise WorktreeError("overlay-conflict", f"Preserved concurrent overlay edits; inspect {name}.")
-        _write_bytes(_safe_path(source, name), before)
+        _write_bytes(_managed_path(source, name), before)
 
 
 def _abort_merge(source, before, session_head):
@@ -446,7 +448,7 @@ def _integrate(root, common, session_id, message):
         applied = {}
         checkpoint_before = None
         checkpoint_written = None
-        checkpoint_path = _safe_path(_state(common), "checkpoint.json")
+        checkpoint_path = _managed_path(_state(common), "checkpoint.json")
         merged = None
         try:
             if merge_needed:
