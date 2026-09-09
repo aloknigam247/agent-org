@@ -93,7 +93,7 @@ function deferred() {
 }
 
 for (const [provider, makeRuntime] of [["plugin", createRuntime], ["project", createProjectRuntime]]) {
-  test(`${provider} agent stop: an advised root blocks with an actionable, human-gated split proposal`, async () => {
+  test(`${provider} agent stop: a root split verdict blocks for structured human triage`, async () => {
     const calls = [];
     const runtime = makeRuntime(async (event, input) => {
       calls.push({ event, input });
@@ -106,11 +106,12 @@ for (const [provider, makeRuntime] of [["plugin", createRuntime], ["project", cr
       sessionId: "top", timestamp: new Date(), workingDirectory: "D:\\source", stopReason: "end_turn",
     }, { sessionId: "host" });
     assert.equal(result.decision, "block");
-    assert.match(result.reason, /top node.*no parent.*overload/i);
-    assert.match(result.reason, /owner_validator\.py --split-advice coordinator/);
-    assert.match(result.reason, /SplitProposal/);
+    assert.match(result.reason, /--split-advice returned a split verdict requiring human triage/);
+    assert.match(result.reason, /top node, no parent will surface it/);
+    assert.match(result.reason, /structured SplitProposal/);
     assert.match(result.reason, /\.github\\agents\\splitter\.md/);
-    assert.match(result.reason, /human.*approv.*every split/i);
+    assert.match(result.reason, /human to approve\/edit\/reject/);
+    assert.doesNotMatch(result.reason, /advisory|optional/);
     assert.deepEqual(calls, [{ event: "rootSplitCheck", input: { cwd: "D:\\wt", node: "coordinator" } }]);
   });
 
@@ -403,7 +404,7 @@ test("an oracle failure is surfaced rather than silently allowing writes", async
   assert.equal(errors.length, 1);
 });
 
-test("usage is per child and cache counters are not counted again", async () => {
+test("usage is the per-session input peak, not sums, output, cache or cumulative CLI totals", async () => {
   const calls = [];
   const runtime = createRuntime(async (event, input) => calls.push({ event, input }));
   await runtime.hooks.onUserPromptSubmitted({
@@ -413,11 +414,16 @@ test("usage is per child and cache counters are not counted again", async () => 
   await runtime.onEvent({ type: "subagent.started", agentId: "child", data: { agentName: "stock" } });
   await runtime.onEvent({
     type: "assistant.usage", agentId: "child",
-    data: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 10 },
+    data: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 10, totalTokens: 5000 },
   });
-  await runtime.onEvent({ type: "subagent.completed", agentId: "child", data: {} });
+  await runtime.onEvent({ type: "assistant.usage", agentId: "other", data: { inputTokens: 9000 } });
+  await runtime.onEvent({ type: "assistant.usage", agentId: "child",
+    data: { inputTokens: 140, outputTokens: 300, totalTokens: 10000 } });
+  await runtime.onEvent({ type: "assistant.usage", agentId: "child",
+    data: { inputTokens: 80, outputTokens: 1000, totalTokens: 50000 } });
+  await runtime.onEvent({ type: "subagent.completed", agentId: "child", data: { totalTokens: 90000 } });
   assert.deepEqual(calls, [{ event: "usage", input: {
-    cwd: "D:\\repo", node: "stock", sessionId: "child", tokens: 120,
+    cwd: "D:\\repo", node: "stock", sessionId: "child", tokens: 140, partial: false,
   } }]);
 });
 
@@ -463,25 +469,25 @@ test("literal live native task result without hook toolCallId retains sentinel a
     "[agent-org] Authoritative child completion (appended by org runtime)\n" +
     "node: kernel\n" +
     `agentId: ${child}\n` +
-    "tokens: 59960 total input+output (authoritative; not billed AI credits)\n" +
+    "peak context: unavailable (no valid inputTokens sample was observed)\n" +
     "durationMs: 32185\n" +
     "status: completed\n" +
     `worktree: ${worktree}\n` +
     "split-advice: no split recommended for kernel\n" +
-    "advisory only: a parent must PROPOSE any split for human approval; " +
-    "org topology and charters do not change automatically.\n" +
+    "Org topology and charters do not change automatically.\n" +
     `[agent-org completion ["${child}","2026-09-08T04:21:32.818Z","toolu_01PWmumTQvH8n8LAB76F7Rxz"]]`,
   } });
   assert.deepEqual(input, before);
   assert.equal(result.modifiedResult.toolTelemetry, toolResult.toolTelemetry);
 });
 
-test("a child completion with no self-reported usage is annotated with authoritative tokens + split advice", async () => {
+test("a child completion with no self-report gets observed peak context and a mandatory split verdict", async () => {
   const runtime = createRuntime(makeOracle(
     { agent: "stock", recommend_split: true, reasons: ["peak session tokens 130000 >= 120000"] }));
   await bindParent(runtime);
   await bindChild(runtime, "child");
   await runtime.onEvent({ type: "subagent.started", agentId: "child", data: { agentName: "stock", toolCallId: "call-1" } });
+  await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: { inputTokens: 42, outputTokens: 12 } });
   await runtime.onEvent({
     type: "subagent.completed", agentId: "child",
     data: { agentName: "stock", toolCallId: "call-1", totalTokens: 4242, durationMs: 999, model: "gpt-x" },
@@ -493,10 +499,12 @@ test("a child completion with no self-reported usage is annotated with authorita
   assert.ok(result.modifiedResult, "task completion must be annotated");
   assert.equal(result.modifiedResult.resultType, "success");
   assert.match(result.modifiedResult.textResultForLlm, /^child-authored summary\n\n\[agent-org\] Authoritative child completion/);
-  assert.match(result.modifiedResult.textResultForLlm, /tokens: 4242 total input\+output/);
+  assert.match(result.modifiedResult.textResultForLlm, /peak context: 42 tokens \(peak occupancy; not billed AI credits\)/);
+  assert.doesNotMatch(result.modifiedResult.textResultForLlm, /4242|advisory only/);
   assert.match(result.modifiedResult.textResultForLlm, /model: gpt-x/);
-  assert.match(result.modifiedResult.textResultForLlm, /RECOMMEND SPLIT for stock — peak session tokens 130000 >= 120000/);
-  assert.match(result.modifiedResult.textResultForLlm, /must PROPOSE any split for human approval/);
+  assert.match(result.modifiedResult.textResultForLlm, /SPLIT VERDICT for stock — peak session tokens 130000 >= 120000/);
+  assert.match(result.modifiedResult.textResultForLlm, /Human triage required: the parent MUST return a structured SplitProposal/);
+  assert.match(result.modifiedResult.textResultForLlm, /Host's ask_user approve\/edit\/reject gate/);
 });
 
 test("native agentId selects distinct same-name siblings, never hook callId or parent identity", async () => {
@@ -504,6 +512,7 @@ test("native agentId selects distinct same-name siblings, never hook callId or p
   await bindParent(runtime);
   for (const [child, total] of [["first", 10], ["second", 20]]) {
     await bindChild(runtime, child);
+    await runtime.onEvent({ type: "assistant.usage", agentId: child, data: { inputTokens: total } });
     await runtime.onEvent({ type: "subagent.completed", agentId: child,
       data: { agentName: "stock", toolCallId: `call-${child}`, totalTokens: total } });
   }
@@ -512,7 +521,8 @@ test("native agentId selects distinct same-name siblings, never hook callId or p
   const results = await Promise.all(["first", "second"].map((child) =>
     runtime.hooks.onPostToolUse({ ...taskInput(child), toolCallId: "call-second" }, { sessionId: "wrong-invocation" })));
   for (const [index, child, total] of [[0, "first", 10], [1, "second", 20]]) {
-    assert.match(results[index].modifiedResult.textResultForLlm, new RegExp(`agentId: ${child}\\ntokens: ${total} total`));
+    assert.match(results[index].modifiedResult.textResultForLlm,
+      new RegExp(`agentId: ${child}\\npeak context: ${total} tokens`));
   }
 });
 
@@ -527,6 +537,7 @@ test("background read_agent is annotated only after a real completion is recorde
   }, { sessionId: "parent" });
   assert.equal(running.modifiedResult, undefined);
   // Completion arrives, then read_agent by agent_id is annotated.
+  await runtime.onEvent({ type: "assistant.usage", agentId: "bg", data: { inputTokens: 77 } });
   await runtime.onEvent({ type: "subagent.completed", agentId: "bg",
     data: { agentName: "shipping", toolCallId: "call-bg", totalTokens: 77 } });
   const done = await runtime.hooks.onPostToolUse({
@@ -534,7 +545,7 @@ test("background read_agent is annotated only after a real completion is recorde
     toolResult: { textResultForLlm: "final child text", resultType: "success" },
   }, { sessionId: "parent" });
   assert.match(done.modifiedResult.textResultForLlm, /^final child text\n\n/);
-  assert.match(done.modifiedResult.textResultForLlm, /tokens: 77 total/);
+  assert.match(done.modifiedResult.textResultForLlm, /peak context: 77 tokens/);
 });
 
 test("duplicate provider output chaining and repeated reads deliver one footer per result", async () => {
@@ -559,6 +570,77 @@ test("duplicate provider output chaining and repeated reads deliver one footer p
   assert.ok((await second.hooks.onPostToolUse(taskInput("child"))).modifiedResult);
 });
 
+test("project and plugin providers compete atomically for one usage record per node/session", async (t) => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "agent-org-usage-"));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", repo], { stdio: "pipe", windowsHide: true });
+  const installed = path.join(repo, ".github", "agent-org");
+  fs.mkdirSync(path.join(installed, "tools"), { recursive: true });
+  fs.copyFileSync(new URL("../plugin/tools/owner_validator.py", import.meta.url),
+    path.join(installed, "tools", "owner_validator.py"));
+  fs.writeFileSync(path.join(installed, "org.json"), JSON.stringify({ version: 1, root: "stock", nodes: [
+    { id: "stock", parent: null, children: [], mode: "Leaf", charter: { domain: ["**"] } },
+  ] }));
+  const writes = [];
+  const errors = [];
+  const providers = [[createProjectRuntime, createProjectOracle], [createRuntime, createOracle]].map(
+    ([makeRuntime, makeOracle]) => {
+      const oracle = makeOracle();
+      return makeRuntime(async (event, input) => {
+        if (!["usage", "splitAdvice"].includes(event)) return {};
+        const result = await oracle(event, input);
+        if (event === "usage") writes.push(result.recorded);
+        return result;
+      }, (error) => errors.push(error));
+    },
+  );
+  for (const runtime of providers) {
+    await bindParent(runtime);
+    await bindChild(runtime, "shared-child", "stock", "parent", "root", repo);
+    for (const inputTokens of [60, 140, 80]) {
+      await runtime.onEvent({ type: "assistant.usage", agentId: "shared-child",
+        data: { inputTokens, outputTokens: 5000, totalTokens: 999999 } });
+    }
+  }
+  const completed = { type: "subagent.completed", agentId: "shared-child", timestamp: "first",
+    data: { totalTokens: 999999 } };
+  await Promise.all(providers.map((runtime) => runtime.onEvent(completed)));
+  assert.deepEqual(errors, []);
+  assert.deepEqual([...writes].sort(), [false, true], "only one provider creates the session record");
+  const usageDir = path.join(repo, ".git", "agent-org", "usage", "stock");
+  const file = path.join(usageDir, "shared-child.json");
+  const original = fs.readFileSync(file, "utf8");
+  assert.deepEqual(JSON.parse(original),
+    { session_id: "shared-child", tokens: 140, metric: "peak_input_tokens", partial: false });
+  assert.deepEqual(fs.readdirSync(usageDir), ["shared-child.json"]);
+  const first = await providers[0].hooks.onPostToolUse(readInput("shared-child"));
+  const second = await providers[1].hooks.onPostToolUse({
+    ...readInput("shared-child"), toolResult: first.modifiedResult,
+  });
+  assert.deepEqual(second.modifiedResult, first.modifiedResult);
+  assert.match(second.modifiedResult.textResultForLlm, /peak context: 140 tokens/);
+  assert.equal(second.modifiedResult.textResultForLlm.split("[agent-org] Authoritative child completion").length - 1, 1);
+  writes.length = 0;
+  await Promise.all(providers.map((runtime) => runtime.onEvent(completed)));
+  assert.deepEqual(writes, [false, false], "replayed completion events do not rewrite usage");
+  assert.equal(fs.readFileSync(file, "utf8"), original);
+
+  // A reusable native session raises its one record, rather than permanently claiming the first turn's peak.
+  for (const runtime of providers) {
+    await runtime.hooks.onUserPromptSubmitted({ sessionId: "shared-child", prompt: "next" });
+    await runtime.onEvent({ type: "assistant.usage", agentId: "shared-child", data: { inputTokens: 160 } });
+  }
+  writes.length = 0;
+  await Promise.all(providers.map((runtime) => runtime.onEvent({ ...completed, timestamp: "second" })));
+  assert.deepEqual([...writes].sort(), [false, true]);
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).tokens, 160);
+  assert.deepEqual(fs.readdirSync(usageDir), ["shared-child.json"]);
+  const advice = await createOracle()("splitAdvice", { cwd: repo, node: "stock" });
+  assert.equal(advice.peak_session_tokens, 160);
+  assert.equal(advice.legacy_usage_records, 0);
+  assert.deepEqual(errors, []);
+});
+
 test("a completion with no usage at all states tokens are unavailable, not zero", async () => {
   const runtime = createRuntime(makeOracle());
   await bindParent(runtime);
@@ -568,14 +650,15 @@ test("a completion with no usage at all states tokens are unavailable, not zero"
     toolName: "task", toolCallId: "call-2", sessionId: "parent", cwd: "D:\\wt",
     toolResult: taskInput("child").toolResult,
   }, { sessionId: "parent" });
-  assert.match(result.modifiedResult.textResultForLlm, /tokens: unavailable/);
-  assert.doesNotMatch(result.modifiedResult.textResultForLlm, /tokens: 0\b/);
+  assert.match(result.modifiedResult.textResultForLlm, /peak context: unavailable/);
+  assert.doesNotMatch(result.modifiedResult.textResultForLlm, /peak context: 0\b/);
 });
 
 test("a failed child completion preserves the failure resultType and reports the error", async () => {
   const runtime = createRuntime(makeOracle());
   await bindParent(runtime);
   await bindChild(runtime, "child");
+  await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: { inputTokens: 12 } });
   await runtime.onEvent({ type: "subagent.failed", agentId: "child",
     data: { agentName: "stock", toolCallId: "call-3", totalTokens: 12, error: "boom" } });
   const result = await runtime.hooks.onPostToolUse({
@@ -585,7 +668,7 @@ test("a failed child completion preserves the failure resultType and reports the
   assert.equal(result.modifiedResult.resultType, "failure");
   assert.match(result.modifiedResult.textResultForLlm, /^partial work\n\n/);
   assert.match(result.modifiedResult.textResultForLlm, /status: failed: boom/);
-  assert.match(result.modifiedResult.textResultForLlm, /tokens: 12 total/);
+  assert.match(result.modifiedResult.textResultForLlm, /peak context: 12 tokens/);
 });
 
 test("completion is published before deferred usage with an unawaited native event handler", async () => {
@@ -617,10 +700,10 @@ test("completion is published before deferred usage with an unawaited native eve
   assert.equal(recorded, false);
   usage.resolve();
   const [, result] = await Promise.all([completion, post]);
-  assert.match(result.modifiedResult.textResultForLlm, /agentId: child\ntokens: 500 total/);
-  assert.match(result.modifiedResult.textResultForLlm, /RECOMMEND SPLIT for stock — native usage burden/);
+  assert.match(result.modifiedResult.textResultForLlm, /agentId: child\npeak context: 3 tokens/);
+  assert.match(result.modifiedResult.textResultForLlm, /SPLIT VERDICT for stock — native usage burden/);
   assert.deepEqual(calls.filter(({ event }) => event === "usage").map(({ input }) => input),
-    [{ cwd: "D:\\wt", node: "stock", sessionId: "child", tokens: 500 }]);
+    [{ cwd: "D:\\wt", node: "stock", sessionId: "child", tokens: 3, partial: false }]);
 });
 
 test("a background task launch never gets a finished footer, even if completion already arrived", async () => {
@@ -630,13 +713,14 @@ test("a background task launch never gets a finished footer, even if completion 
   const launch = taskInput("bg", "running launch");
   launch.toolArgs.mode = "background";
   assert.deepEqual(await runtime.hooks.onPostToolUse(launch), {});
+  await runtime.onEvent({ type: "assistant.usage", agentId: "bg", data: { inputTokens: 8 } });
   await runtime.onEvent({ type: "subagent.completed", agentId: "bg", data: { totalTokens: 8 } });
   assert.deepEqual(await runtime.hooks.onPostToolUse(launch), {});
   delete launch.toolArgs.mode;
   launch.toolResult.toolTelemetry.properties.execution_mode = "background";
   assert.deepEqual(await runtime.hooks.onPostToolUse(launch), {});
   const result = await runtime.hooks.onPostToolUse(readInput("bg"));
-  assert.match(result.modifiedResult.textResultForLlm, /tokens: 8 total/);
+  assert.match(result.modifiedResult.textResultForLlm, /peak context: 8 tokens/);
 });
 
 test("missing native identity is explicit and conservative despite matching name, callId, prompt or body", async () => {
@@ -696,36 +780,68 @@ test("an unbound event does not guess usage workspace from the only root in the 
     (error) => errors.push(error));
   await bindParent(runtime);
   await runtime.onEvent({ type: "subagent.started", agentId: "unbound", data: { agentName: "stock" } });
+  await runtime.onEvent({ type: "assistant.usage", agentId: "unbound", data: { inputTokens: 10 } });
   await runtime.onEvent({ type: "subagent.completed", agentId: "unbound", data: { totalTokens: 10 } });
   assert.deepEqual(calls, []);
   assert.match(errors[0], /no unambiguous workspace/);
 });
 
-test("partial or absent usage never becomes an invented authoritative total", async () => {
-  for (const [usage, totalTokens, expected] of [
-    [{}, undefined, "tokens: unavailable"],
-    [{ cacheReadTokens: 99, cacheWriteTokens: 7 }, undefined, "tokens: unavailable"],
-    [{ inputTokens: 12 }, undefined, "tokens: 12 observed input/output"],
-    [{ inputTokens: 12, outputTokens: 3 }, null, "tokens: 15 observed input/output"],
-    [{ inputTokens: -10, outputTokens: "3" }, NaN, "tokens: unavailable"],
-    [{ inputTokens: 12 }, -1, "tokens: 12 observed input/output"],
-    [{ inputTokens: 0, outputTokens: 0 }, undefined, "tokens: 0 observed input/output"],
-    [{}, 0, "tokens: 0 total input+output (authoritative; not billed AI credits)"],
-  ]) {
-    const runtime = createRuntime(makeOracle());
+for (const [provider, makeRuntime] of [["plugin", createRuntime], ["project", createProjectRuntime]]) {
+  test(`${provider} partial or absent input usage never becomes an invented context peak`, async () => {
+    for (const [samples, totalTokens, peak, partial] of [
+      [[], 990000, undefined, false],
+      [[{}], undefined, undefined, true],
+      [[{ outputTokens: 100 }], 100, undefined, true],
+      [[{ cacheReadTokens: 99, cacheWriteTokens: 7 }], undefined, undefined, true],
+      [[{ inputTokens: 12 }], undefined, 12, false],
+      [[{ inputTokens: 12, outputTokens: 3 }], null, 12, false],
+      [[{ inputTokens: -10, outputTokens: "3" }], NaN, undefined, true],
+      [[{ inputTokens: 1.5 }, { inputTokens: null }, { inputTokens: "12" }], 13, undefined, true],
+      [[{ inputTokens: 12 }, {}], -1, 12, true],
+      [[{}, { inputTokens: 0, outputTokens: 9 }], 99999, 0, true],
+      [[{ inputTokens: 0, outputTokens: 0 }], undefined, 0, false],
+      [[{ inputTokens: Infinity }, { inputTokens: 12 }, { inputTokens: 8 }], 1234, 12, true],
+      [[{}], 0, undefined, true],
+    ]) {
+      const calls = [];
+      const runtime = makeRuntime(async (event, input) => {
+        if (event === "usage") calls.push(input);
+        return makeOracle()(event, input);
+      });
+      await bindParent(runtime);
+      await bindChild(runtime, "child");
+      for (const data of samples) await runtime.onEvent({ type: "assistant.usage", agentId: "child", data });
+      await runtime.onEvent({ type: "subagent.failed", agentId: "child", data: { totalTokens, error: "stopped" } });
+      const result = await runtime.hooks.onPostToolUse(taskInput("child", "partial"));
+      const text = result.modifiedResult.textResultForLlm;
+      if (peak === undefined) {
+        assert.match(text, /peak context: unavailable \(no valid inputTokens sample was observed\)/);
+        assert.doesNotMatch(text, /peak context: 0\b/);
+        assert.deepEqual(calls, []);
+      } else {
+        assert.ok(text.includes(`peak context: ${peak} tokens (peak occupancy; ` +
+          `${partial ? "partial observations; " : ""}not billed AI credits)`), text);
+        assert.deepEqual(calls, [{ cwd: "D:\\wt", node: "stock", sessionId: "child", tokens: peak, partial }]);
+      }
+      assert.doesNotMatch(text, /total input\+output|accumulated usage/);
+    }
+  });
+
+  test(`${provider} a lower follow-up turn retains the entire session peak and missing-input flag`, async () => {
+    const runtime = makeRuntime(makeOracle());
     await bindParent(runtime);
     await bindChild(runtime, "child");
-    await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: usage });
-    await runtime.onEvent({ type: "subagent.failed", agentId: "child", data: { totalTokens, error: "stopped" } });
-    const result = await runtime.hooks.onPostToolUse(taskInput("child", "partial"));
-    const text = result.modifiedResult.textResultForLlm;
-    assert.ok(text.includes(expected), text);
-    if (expected.includes("observed")) {
-      assert.ok(text.includes("may be partial; not an authoritative total; not billed AI credits"), text);
-      assert.doesNotMatch(text, /total input\+output \(authoritative/);
+    for (const inputTokens of [80, 12]) {
+      await runtime.hooks.onUserPromptSubmitted({ sessionId: "child", prompt: "continue" });
+      await runtime.onEvent({ type: "subagent.started", agentId: "child", data: { agentName: "stock" } });
+      await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: {} });
+      await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: { inputTokens } });
+      await runtime.onEvent({ type: "subagent.completed", agentId: "child", data: { totalTokens: 10000 } });
+      const result = await runtime.hooks.onPostToolUse(readInput("child"));
+      assert.match(result.modifiedResult.textResultForLlm, /peak context: 80 tokens \(peak occupancy; partial observations;/);
     }
-  }
-});
+  });
+}
 
 test("usage and advice failures keep the completion available without consuming a delivery claim", async () => {
   const errors = [];
@@ -736,9 +852,10 @@ test("usage and advice failures keep the completion available without consuming 
   }, (error) => errors.push(error));
   await bindParent(runtime);
   await bindChild(runtime, "child");
+  await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: { inputTokens: 6 } });
   await runtime.onEvent({ type: "subagent.completed", agentId: "child", data: { totalTokens: 6, cancelled: true } });
   const first = await runtime.hooks.onPostToolUse(taskInput("child"));
-  assert.match(first.modifiedResult.textResultForLlm, /tokens: 6 total/);
+  assert.match(first.modifiedResult.textResultForLlm, /peak context: 6 tokens/);
   assert.match(first.modifiedResult.textResultForLlm, /status: cancelled/);
   assert.match(first.modifiedResult.textResultForLlm, /usage-recording: failed/);
   assert.match(first.modifiedResult.textResultForLlm, /split-advice: unavailable/);
@@ -782,7 +899,7 @@ test("reused child turns invalidate old reads and do not permanently suppress ne
     for (const runtime of providers) {
       output = (await runtime.hooks.onPostToolUse({ ...readInput("child"), toolResult: output })).modifiedResult;
     }
-    assert.match(output.textResultForLlm, new RegExp(`tokens: ${turn} observed`));
+    assert.match(output.textResultForLlm, new RegExp(`peak context: ${turn} tokens`));
     assert.equal(output.textResultForLlm.split("[agent-org] Authoritative child completion").length - 1, 1);
     assert.ok(output.textResultForLlm.endsWith(`[agent-org completion ["child","turn-${turn}","same-call"]]`));
   }
@@ -801,6 +918,7 @@ test("a started turn supersedes an old completion still awaiting oracle work", a
     });
     await bindParent(runtime);
     await bindChild(runtime, "child");
+    await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: { inputTokens: 1 } });
     const completion = runtime.onEvent({ type: "subagent.completed", agentId: "child", data: { totalTokens: 1 } });
     const post = runtime.hooks.onPostToolUse(readInput("child"));
     await entered.promise;
@@ -808,9 +926,10 @@ test("a started turn supersedes an old completion still awaiting oracle work", a
     release.resolve();
     await completion;
     assert.deepEqual(await post, {});
+    await runtime.onEvent({ type: "assistant.usage", agentId: "child", data: { inputTokens: 2 } });
     await runtime.onEvent({ type: "subagent.completed", agentId: "child", timestamp: "new", data: { totalTokens: 2 } });
     const fresh = await runtime.hooks.onPostToolUse(readInput("child"));
-    assert.match(fresh.modifiedResult.textResultForLlm, /tokens: 2 total/);
+    assert.match(fresh.modifiedResult.textResultForLlm, /peak context: 2 tokens/);
   }
 });
 
@@ -827,7 +946,11 @@ test("denied follow-up permissions do not invalidate a valid completion", async 
 });
 
 test("SessionEnd before native completion preserves already observed child usage", async () => {
-  const runtime = createRuntime(makeOracle(), () => {});
+  const calls = [];
+  const runtime = createRuntime(async (event, input) => {
+    if (event === "usage") calls.push(input);
+    return makeOracle()(event, input);
+  });
   await bindParent(runtime);
   await bindChild(runtime, "child");
   await runtime.onEvent({ type: "subagent.started", agentId: "child", data: { agentName: "stock" } });
@@ -835,5 +958,6 @@ test("SessionEnd before native completion preserves already observed child usage
   await runtime.hooks.onSessionEnd({ sessionId: "child" }, { sessionId: "parent" });
   await runtime.onEvent({ type: "subagent.completed", agentId: "child", data: {} });
   const result = await runtime.hooks.onPostToolUse(readInput("child"));
-  assert.match(result.modifiedResult.textResultForLlm, /node: stock\nagentId: child\ntokens: 12 observed input\/output/);
+  assert.match(result.modifiedResult.textResultForLlm, /node: stock\nagentId: child\npeak context: 12 tokens/);
+  assert.deepEqual(calls, [{ cwd: "D:\\wt", node: "stock", sessionId: "child", tokens: 12, partial: false }]);
 });

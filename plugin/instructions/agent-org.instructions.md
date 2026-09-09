@@ -24,8 +24,11 @@ Start the root task prompt with `AgentOrgActingNode: <org.root>`. Every live nod
 repository-relative file named by the `loop:` line in its definition's Markdown body.
 
 Handle kernel governance only when the human explicitly requests it. After bootstrap, only `splitter` may
-apply an approved organization change. Present each SplitProposal via `ask_user` for approve / edit / reject;
-on approval, invoke `splitter` with the root's existing session worktree and the approved proposal.
+apply an approved organization change. For each returned SplitProposal or split verdict, the Host MUST use
+`ask_user` for approve / edit / reject before proceeding. A split verdict requires human triage: the Host MUST
+NOT treat it as advisory, silently defer, or take no action. Require a structured SplitProposal using the shape
+in `.github\agents\splitter.md` for the gate; on approval, invoke `splitter` with the root's existing session
+worktree and the approved proposal. Never mutate topology merely because a verdict is true.
 
 Invoke `agent-org-design` through the native skill tool when a design question requires it. Do not read SKILL.md
 as a substitute for skill invocation. If it was installed during this session, request `/skills reload` first.

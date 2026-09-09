@@ -1,11 +1,13 @@
 const marker = /^AgentOrgActingNode:[ \t]*([a-z][a-z0-9-]*)[ \t]*(?:\r?\n|$)/;
-const validTokens = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+const validTokens = (value) => Number.isSafeInteger(value) && value >= 0;
 const nativeId = (value) => typeof value === "string" && value.trim() ? value : undefined;
 
 export function createRuntime(callOracle, reportError = console.error) {
   const contexts = new Map();
+  const endedContexts = new Map();
   const names = new Map();
-  const tokens = new Map();
+  // Session-wide peak input context, never cumulative CLI totals or output-token consumption.
+  const usageBySession = new Map();
   const roots = new Map();
   const stopEnforced = new Set();
   // One latest completion per native child id, replaced/invalidated at the next turn.
@@ -14,7 +16,7 @@ export function createRuntime(callOracle, reportError = console.error) {
 
   function beginTurn(id) {
     reports.delete(id);
-    tokens.delete(id);
+    // Reused child turns share one session peak; a new turn only invalidates the completion.
   }
 
   function payload(input, invocation) {
@@ -50,9 +52,9 @@ export function createRuntime(callOracle, reportError = console.error) {
           stopEnforced.add(sessionId);
           return {
             decision: "block",
-            reason: "The top node has no parent to surface its overload. " +
-              `Run owner_validator.py --split-advice ${context.node} and return a SplitProposal per ` +
-              ".github\\agents\\splitter.md; a human must still approve every split.",
+            reason: "Your --split-advice returned a split verdict requiring human triage. " +
+              "As the top node, no parent will surface it, so produce a structured SplitProposal " +
+              "(per .github\\agents\\splitter.md) for the human to approve/edit/reject.",
           };
         }
       } catch (error) {
@@ -79,9 +81,10 @@ export function createRuntime(callOracle, reportError = console.error) {
     },
     onSessionEnd: async (input, invocation) => {
       const sessionId = input.sessionId ?? invocation?.sessionId;
+      if (contexts.has(sessionId)) endedContexts.set(sessionId, contexts.get(sessionId));
       contexts.delete(sessionId);
       stopEnforced.delete(sessionId);
-      // The native completion event can follow SessionEnd; retain observed usage until it is captured.
+      // Completion can follow SessionEnd; retain its usage and attribution without authorizing more tools.
     },
     onUserPromptSubmitted: async (input, invocation) => {
       const value = payload(input, invocation);
@@ -111,6 +114,7 @@ export function createRuntime(callOracle, reportError = console.error) {
         }
       }
       contexts.set(value.sessionId, context);
+      endedContexts.delete(value.sessionId);
       roots.set(context.run_id, context.worktree ?? value.cwd);
       beginTurn(value.sessionId);
     },
@@ -124,22 +128,25 @@ export function createRuntime(callOracle, reportError = console.error) {
       names.set(id, event.data?.agentName);
     } else if (event.type === "assistant.usage") {
       const usage = event.data ?? {};
-      // inputTokens already includes cached input in the CLI usage total.
-      // Missing/invalid components are not invented zeros; observed usage may be partial.
-      const components = [usage.inputTokens, usage.outputTokens].filter(validTokens);
-      if (components.length) {
-        tokens.set(id, (tokens.get(id) ?? 0) + components.reduce((sum, value) => sum + value, 0));
+      const observed = usageBySession.get(id) ?? { peak: undefined, partial: false };
+      // inputTokens already includes cached input. Output/cache counters and totalTokens are not occupancy.
+      // A missing/invalid input sample is explicitly partial, not a fabricated zero.
+      if (validTokens(usage.inputTokens)) {
+        observed.peak = observed.peak === undefined ? usage.inputTokens : Math.max(observed.peak, usage.inputTokens);
+      } else {
+        observed.partial = true;
       }
+      usageBySession.set(id, observed);
     } else if (event.type === "subagent.completed" || event.type === "subagent.failed") {
-      const context = contexts.get(id);
+      const context = contexts.get(id) ?? endedContexts.get(id);
       const cwd = context?.worktree ?? roots.get(context?.run_id);
       const data = event.data ?? {};
       const node = context?.node ?? data.agentName ?? names.get(id);
-      const authoritative = validTokens(data.totalTokens);
+      const observed = usageBySession.get(id);
       const report = {
         agentId: id, node, context, cwd,
-        tokens: authoritative ? data.totalTokens : tokens.get(id),
-        authoritative,
+        tokens: observed?.peak,
+        partial: observed?.partial === true,
         durationMs: data.durationMs,
         model: data.model,
         failed: event.type === "subagent.failed",
@@ -152,11 +159,11 @@ export function createRuntime(callOracle, reportError = console.error) {
       report.ready = new Promise((resolve) => { ready = resolve; });
       // Publish BEFORE the first asynchronous oracle call. session.on does not await this handler.
       reports.set(id, report);
-      tokens.delete(id);
       names.delete(id);
       try {
         if (cwd && node && report.tokens !== undefined) {
-          await callOracle("usage", { cwd, node, sessionId: id, tokens: report.tokens });
+          // The oracle atomically maintains one peak record per (node, session), across both providers.
+          await callOracle("usage", { cwd, node, sessionId: id, tokens: report.tokens, partial: report.partial });
         } else if (report.tokens !== undefined) {
           reportError(`agent-org: no unambiguous workspace for usage from ${id}`);
         }
@@ -175,12 +182,10 @@ export function createRuntime(callOracle, reportError = console.error) {
     lines.push(`node: ${report.node ?? "unknown"}`);
     lines.push(`agentId: ${report.agentId}`);
     if (report.tokens === undefined || report.tokens === null) {
-      lines.push("tokens: unavailable (no authoritative or accumulated usage was recorded)");
-    } else if (report.authoritative) {
-      lines.push(`tokens: ${report.tokens} total input+output (authoritative; not billed AI credits)`);
+      lines.push("peak context: unavailable (no valid inputTokens sample was observed)");
     } else {
-      lines.push(`tokens: ${report.tokens} observed input/output (accumulated usage; may be partial; ` +
-        "not an authoritative total; not billed AI credits)");
+      lines.push(`peak context: ${report.tokens} tokens (peak occupancy; ` +
+        `${report.partial ? "partial observations; " : ""}not billed AI credits)`);
     }
     if (report.durationMs !== undefined) lines.push(`durationMs: ${report.durationMs}`);
     if (report.model) lines.push(`model: ${report.model}`);
@@ -190,14 +195,15 @@ export function createRuntime(callOracle, reportError = console.error) {
     if (report.cwd) lines.push(`worktree: ${report.cwd}`);
     if (report.usageError) lines.push("usage-recording: failed (split advice may omit this completion)");
     if (advice && advice.recommend_split) {
-      lines.push(`split-advice: RECOMMEND SPLIT for ${advice.agent} — ${(advice.reasons ?? []).join("; ")}`);
+      lines.push(`split-advice: SPLIT VERDICT for ${advice.agent} — ${(advice.reasons ?? []).join("; ")}`);
+      lines.push("Human triage required: the parent MUST return a structured SplitProposal " +
+        "(per .github\\agents\\splitter.md) through the Host's ask_user approve/edit/reject gate.");
     } else if (advice) {
       lines.push(`split-advice: no split recommended for ${advice.agent}`);
     } else {
       lines.push("split-advice: unavailable");
     }
-    lines.push("advisory only: a parent must PROPOSE any split for human approval; " +
-      "org topology and charters do not change automatically.");
+    lines.push("Org topology and charters do not change automatically.");
     lines.push(report.tag);
     return lines.join("\n");
   }

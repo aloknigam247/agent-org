@@ -68,8 +68,10 @@ read SKILL.md as a substitute for invoking a registered skill. If a skill was ad
 `/skills reload` and surface that discovery requirement instead of claiming the skill is already available.
 Run the task's targeted checks and the owner validator. Report touched paths, validation, and unresolved
 foreign changes. As the final step of every task, including trivial or read-only ones, query
-`owner_validator.py --split-advice` with your node id, state its result, and when a split is advised return a
-SplitProposal using the shape in `.github\agents\splitter.md`; a top node has no parent to surface it otherwise.
+`owner_validator.py --split-advice` with your node id and state its result. A `recommend_split` result of true
+is a verdict a human must triage, not optional advice: you MUST return a structured SplitProposal (using the
+shape in `.github\agents\splitter.md`) and surface it so it reaches the human's approve/edit/reject gate.
+A top node surfaces it to the Host directly. Never downgrade a verdict to advisory or take no action.
 Do not mutate the organization yourself.
 
 After reconciliation, only the root integrates and cleans up. Use the source repo and run id from the descriptor:
