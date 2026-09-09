@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 PLUGIN = Path(__file__).resolve().parents[1] / "plugin"
+ORG_PATH = ".github/agent-org/org.json"
 
 
 @pytest.fixture
@@ -18,14 +19,14 @@ def repo(tmp_path):
     org = {
         "version": 3, "root": "coordinator", "scope": ["**"], "nodes": [
             {"id": "coordinator", "parent": None, "children": ["catalog", "orders"], "mode": "Parent",
-             "charter": {"domain": [".github/**", "org.json"], "concerns": [], "excludes": []}},
+             "charter": {"domain": [".github/**"], "concerns": [], "excludes": []}},
             {"id": "catalog", "parent": "coordinator", "children": [], "mode": "Leaf",
              "charter": {"domain": ["catalog/**"], "concerns": [], "excludes": []}},
             {"id": "orders", "parent": "coordinator", "children": [], "mode": "Leaf",
              "charter": {"domain": ["orders/**"], "concerns": [], "excludes": []}},
         ],
     }
-    (tmp_path / "org.json").write_text(json.dumps(org), encoding="utf-8")
+    (tmp_path / ORG_PATH).write_text(json.dumps(org), encoding="utf-8")
     return tmp_path
 
 
@@ -92,3 +93,18 @@ def test_canonical_hook_configuration_is_windows_only():
         for entry in entries:
             assert "bash" not in entry
             assert rf".github\agent-org\tools\hook.ps1 -Event {name}" in entry["powershell"]
+
+
+@pytest.mark.parametrize("content", [None, "{"])
+def test_powershell_hook_fails_closed_for_incomplete_canonical_installation(repo, content):
+    (repo / "org.json").write_bytes((repo / ORG_PATH).read_bytes())
+    if content is None:
+        (repo / ORG_PATH).unlink()
+    else:
+        (repo / ORG_PATH).write_text(content, encoding="utf-8")
+    payload = {"cwd": str(repo), "toolName": "create", "toolArgs": {"path": "orders/new.txt"}}
+    decision = invoke(repo, "preToolUse", payload, repo)
+    assert decision["permissionDecision"] == "deny"
+    assert "configuration audit failed" in decision["permissionDecisionReason"]
+    warning = invoke(repo, "postToolUse", payload, repo)
+    assert "configuration audit failed" in warning["additionalContext"]

@@ -5,7 +5,7 @@
     {
       "id": "director", "parent": null, "children": ["audit", "warehouse"], "mode": "Parent",
       "charter": {
-        "domain": [".github/**", ".gitignore", "org.json"],
+        "domain": [".github/**", ".gitignore", "/.github/agent-org/org.json"],
         "concerns": ["shared coordination"], "excludes": []
       }
     },

@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "root": "main",
   "nodes": [
     {
@@ -15,7 +15,7 @@
           "/.gitignore",
           "/AGENTS.md",
           "/conftest.py",
-          "/org.json",
+          "/.github/agent-org/org.json",
           "/pytest.ini",
           "/README.md"
         ],
@@ -59,7 +59,8 @@
           "tests of plugin and runtime behavior"
         ],
         "excludes": [
-          "tests/test_bundle_validator.py"
+          "tests/test_bundle_validator.py",
+          "/.github/agent-org/org.json"
         ]
       }
     }

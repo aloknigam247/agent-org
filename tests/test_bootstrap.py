@@ -18,6 +18,10 @@ PLUGIN = Path(__file__).resolve().parents[1] / "plugin"
 SPEC = importlib.util.spec_from_file_location("agent_org_bootstrap", PLUGIN / "tools" / "bootstrap.py")
 bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
+ORG_PATH = bootstrap.ORG_PATH
+OWNER_SPEC = importlib.util.spec_from_file_location("agent_org_owner", PLUGIN / "tools" / "owner_validator.py")
+owner = importlib.util.module_from_spec(OWNER_SPEC)
+OWNER_SPEC.loader.exec_module(owner)
 
 
 def git(repo, *args, allowed=(0,)):
@@ -33,8 +37,36 @@ def write(path, content):
     path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
 
 
-def seed():
-    return json.loads((PLUGIN / "seed" / "org.json").read_text(encoding="utf-8"))
+def initial_org():
+    return bootstrap.default_org()
+
+
+def test_fresh_defaults_and_schema_use_an_evolution_counter():
+    assert bootstrap.default_org()["version"] == 3
+    for schema in (PLUGIN / "org.schema.json", PLUGIN.parent / ".github/agent-org/org.schema.json"):
+        version = json.loads(schema.read_text(encoding="utf-8"))["properties"]["version"]
+        assert version["type"] == "integer"
+        assert set(version) == {"type", "description"}
+        assert "evolution counter" in version["description"]
+
+
+@pytest.mark.parametrize("version", [True, False, None, "3", 3.0, [], {}])
+def test_bootstrap_rejects_noninteger_versions_without_writes(repo, version):
+    org = initial_org()
+    org["version"] = version
+    write(repo / ORG_PATH, json.dumps(org))
+    before, excludes = snapshot(repo), exclude_file(repo).read_bytes()
+    with pytest.raises(bootstrap.BootstrapError, match=r"^org\.json must have an integer version\.$"):
+        bootstrap.bootstrap_repo(repo, source=PLUGIN)
+    assert snapshot(repo) == before
+    assert exclude_file(repo).read_bytes() == excludes
+
+
+def test_bootstrap_requires_a_version():
+    org = initial_org()
+    del org["version"]
+    with pytest.raises(bootstrap.BootstrapError, match=r"^org\.json must have an integer version\.$"):
+        bootstrap.runtime_files(org, source=PLUGIN)
 
 
 def frontmatter(content):
@@ -140,7 +172,7 @@ def test_unselected_installed_profiles_are_rejected_without_removing_user_files(
 
 
 def test_generated_node_can_resolve_loop_without_injected_frontmatter():
-    org = seed()
+    org = initial_org()
     org["root"] = "navigator"
     org["nodes"][0]["id"] = "navigator"
     definition = bootstrap.runtime_files(org, source=PLUGIN)[".github/agents/navigator.md"]
@@ -155,15 +187,16 @@ def test_independent_configuration_axes(repo, scope, collaboration, storage):
     result = bootstrap.bootstrap_repo(
         repo, scope=scope, collaboration=collaboration, storage=storage, source=PLUGIN
     )
-    org = json.loads((repo / "org.json").read_text(encoding="utf-8"))
+    org = json.loads((repo / ORG_PATH).read_text(encoding="utf-8"))
     expected_scope = ["**"] if scope is None else scope
     assert org["collaboration"] == collaboration
     assert org["scope"] == expected_scope
     assert org["storage"] == storage
     assert org["nodes"][0]["charter"]["domain"] == expected_scope
     assert org["root"] == "main"
-    assert org["version"] == seed()["version"]
-    assert set(result["created"]) == set(bootstrap.runtime_files(org, source=PLUGIN)) | {"org.json"}
+    assert org["version"] == 3
+    assert set(result["created"]) == set(bootstrap.runtime_files(org, source=PLUGIN)) | {ORG_PATH}
+    assert not (repo / "org.json").exists()
     assert result["existing"] == []
 
     profiles = {path.name for path in (repo / ".github" / "instructions").iterdir()}
@@ -189,12 +222,12 @@ def test_independent_configuration_axes(repo, scope, collaboration, storage):
         )
         assert "task result" in collaboration_profile
         assert "configured root" not in collaboration_profile
-    ignored = git(repo, "check-ignore", "--quiet", "--", "org.json", allowed=(0, 1)).returncode == 0
+    ignored = git(repo, "check-ignore", "--quiet", "--", ORG_PATH, allowed=(0, 1)).returncode == 0
     assert ignored == (storage == "local")
     if storage == "local":
         assert git(repo, "status", "--porcelain", "--untracked-files=all").stdout == ""
     else:
-        assert "/org.json" not in exclude_file(repo).read_text(encoding="utf-8").splitlines()
+        assert "/" + ORG_PATH not in exclude_file(repo).read_text(encoding="utf-8").splitlines()
         assert git(repo, "diff", "--cached", "--name-only").stdout == ""
 
     for relative in (".github/agent-org/tools/__pycache__/bootstrap.pyc", ".worktrees/session/scratch.txt"):
@@ -203,7 +236,7 @@ def test_independent_configuration_axes(repo, scope, collaboration, storage):
 
 
 def test_custom_root_is_rendered_without_default_agent(repo):
-    original_seed = (PLUGIN / "seed" / "org.json").read_bytes()
+    original_defaults = initial_org()
     result = bootstrap.bootstrap_repo(repo, root_name="product-root", source=PLUGIN)
     org = result["org"]
     assert org["root"] == org["nodes"][0]["id"] == "product-root"
@@ -213,7 +246,7 @@ def test_custom_root_is_rendered_without_default_agent(repo):
     assert loop_reference(definition) == ".github/agent-org/loops/leaf.md"
     assert b".github\\agents\\product-root.md" not in definition
     assert b"Read and follow this operating file:" in definition
-    assert (PLUGIN / "seed" / "org.json").read_bytes() == original_seed
+    assert initial_org() == original_defaults
 
 
 def test_plugin_agent_assets_have_no_static_root_definition():
@@ -255,7 +288,7 @@ def test_bootstrap_preserves_only_public_entry_points(repo, root_name):
 
 def test_non_root_promotion_and_new_children_remain_internal(repo):
     org = live_tree()
-    write(repo / "org.json", json.dumps(org))
+    write(repo / ORG_PATH, json.dumps(org))
     bootstrap.bootstrap_repo(
         repo, root_name=org["root"], scope=org["scope"], collaboration=org["collaboration"], source=PLUGIN
     )
@@ -284,14 +317,14 @@ def test_renderer_rejects_a_template_that_makes_children_user_invocable(tmp_path
     template = source / "templates" / "_node.template.md"
     write(template, template.read_text(encoding="utf-8").replace("user-invocable: false", "user-invocable: true"))
     with pytest.raises(bootstrap.BootstrapError, match="user-invocable: false"):
-        bootstrap.runtime_files(seed(), source=source)
+        bootstrap.runtime_files(initial_org(), source=source)
 
 
 def test_template_presence_alone_does_not_misclassify_a_source(tmp_path):
     source = tmp_path / "ambiguous source"
     write(source / "templates" / "_node.template.md", "not a runtime")
     with pytest.raises(bootstrap.BootstrapError, match="neither a plugin root nor an installed"):
-        bootstrap.runtime_files(seed(), source=source)
+        bootstrap.runtime_files(initial_org(), source=source)
 
 
 def test_runtime_rendering_uses_live_roles_and_stable_scope(tmp_path):
@@ -301,6 +334,7 @@ def test_runtime_rendering_uses_live_roles_and_stable_scope(tmp_path):
     assert bootstrap.runtime_files(org) == files
     assert bootstrap.runtime_files(org, PLUGIN) == files
     assert "org.json" not in files
+    assert ORG_PATH not in files
     assert json.dumps(org) == before
     for node in org["nodes"]:
         loop = loop_reference(files[f".github/agents/{node['id']}.md"])
@@ -355,7 +389,7 @@ def test_runtime_allowlist_and_optional_hook(tmp_path):
         write(source.joinpath(*relative.split("/")), "must not ship")
     helper = source / "extensions" / "agent-org" / "helpers" / "audit.mjs"
     write(helper, "export const marker = true;\n")
-    files = bootstrap.runtime_files(seed(), source=source)
+    files = bootstrap.runtime_files(initial_org(), source=source)
     assert ".github/agent-org/tools/hook.ps1" not in files
     assert files[".github/extensions/agent-org/helpers/audit.mjs"] == helper.read_bytes()
     assert all(b"must not ship" not in content for content in files.values())
@@ -403,7 +437,7 @@ def test_local_overlay_does_not_hide_other_github_files(repo):
     ".github/hooks/agent-org.json",
     ".github/instructions/agent-org.instructions.md",
     ".github/skills/agent-org-design/SKILL.md",
-    "org.json",
+    ORG_PATH,
 ])
 def test_conflicts_are_detected_before_any_writes(repo, relative):
     write(repo.joinpath(*relative.split("/")), "unrelated user file\n")
@@ -425,7 +459,7 @@ def test_non_directory_destination_parent_is_a_conflict(repo):
 
 def test_matching_generated_file_and_line_endings_are_preserved(repo):
     relative = ".github/agents/main.md"
-    expected = bootstrap.runtime_files(seed(), source=PLUGIN)[relative].replace(b"\r\n", b"\n")
+    expected = bootstrap.runtime_files(initial_org(), source=PLUGIN)[relative].replace(b"\r\n", b"\n")
     path = repo.joinpath(*relative.split("/"))
     write(path, expected.replace(b"\n", b"\r\n"))
     content, modified = path.read_bytes(), path.stat().st_mtime_ns
@@ -453,10 +487,10 @@ def test_dirty_repository_and_index_are_not_changed(repo, storage):
     assert (repo / "human-notes.txt").read_text(encoding="utf-8") == "not for agents\n"
 
 
-@pytest.mark.parametrize("relative", [".github/agents/main.md", "org.json"])
+@pytest.mark.parametrize("relative", [".github/agents/main.md", ORG_PATH])
 def test_local_mode_rejects_tracked_generated_files(repo, relative):
-    content = (json.dumps(seed()) + "\n").encode("utf-8") if relative == "org.json" else (
-        bootstrap.runtime_files(seed(), source=PLUGIN)[relative]
+    content = (json.dumps(initial_org()) + "\n").encode("utf-8") if relative == ORG_PATH else (
+        bootstrap.runtime_files(initial_org(), source=PLUGIN)[relative]
     )
     write(repo.joinpath(*relative.split("/")), content)
     git(repo, "add", relative)
@@ -495,26 +529,138 @@ def test_conflicting_configuration_never_resets_initialized_org(repo, changed):
     assert exclude_file(repo).read_bytes() == excludes
 
 
-def test_legacy_configuration_defaults_preserve_existing_org_bytes(repo):
-    original = json.dumps(seed(), indent=4).encode("utf-8")
-    write(repo / "org.json", original)
+def test_canonical_configuration_defaults_preserve_existing_org_bytes(repo):
+    original = json.dumps(initial_org(), indent=4).encode("utf-8")
+    write(repo / ORG_PATH, original)
     result = bootstrap.bootstrap_repo(repo, source=PLUGIN)
-    assert (repo / "org.json").read_bytes() == original
-    assert result["org"] == seed()
-    assert "org.json" in result["existing"]
+    assert (repo / ORG_PATH).read_bytes() == original
+    assert result["org"] == initial_org()
     assert ".github/instructions/agent-org.collaboration-agents.instructions.md" in result["created"]
     assert ".github/instructions/agent-org.scope-full.instructions.md" in result["created"]
+
+
+@pytest.mark.parametrize("storage", ["local", "tracked"])
+@pytest.mark.parametrize("version", [-100, 0, 1, 3, 4, 5, 10**20])
+def test_canonical_install_preserves_any_integer_version_state_storage_and_index(repo, storage, version):
+    org = live_tree()
+    org["storage"] = storage
+    org["version"] = version
+    original = b"\xef\xbb\xbf" + json.dumps(org, indent=4).replace("\n", "\r\n").encode("utf-8")
+    write(repo / ORG_PATH, original)
+    write(repo / ".github/agent-org/user-note.md", "preserve target-specific state\n")
+    if storage == "tracked":
+        git(repo, "add", ORG_PATH)
+    before_index = git(repo, "diff", "--cached", "--binary").stdout
+    before_exclude = exclude_file(repo).read_bytes()
+    result = bootstrap.bootstrap_repo(repo, source=PLUGIN)
+    assert (repo / ORG_PATH).read_bytes() == original
+    assert result["org"] == org
+    assert (repo / ".github/agent-org/user-note.md").read_text() == "preserve target-specific state\n"
+    assert git(repo, "diff", "--cached", "--binary").stdout == before_index
+    assert exclude_file(repo).read_bytes().startswith(before_exclude)
+    ignored = git(repo, "check-ignore", "--quiet", ORG_PATH, allowed=(0, 1)).returncode == 0
+    assert ignored == (storage == "local")
+    assert bootstrap.bootstrap_repo(repo, source=PLUGIN)["created"] == []
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("root_content", [b"{", b"{}", json.dumps(live_tree()).encode("utf-8")])
+def test_bootstrap_only_uses_canonical_config_and_preserves_unrelated_root_file(repo, existing, root_content):
+    write(repo / "org.json", root_content)
+    if existing:
+        write(repo / ORG_PATH, json.dumps(initial_org()))
+    result = bootstrap.bootstrap_repo(repo, source=PLUGIN)
+    assert (repo / "org.json").read_bytes() == root_content
+    assert result["org"]["root"] == "main"
+    assert result["org"]["version"] == 3
+    assert bootstrap.check_runtime(repo, source=PLUGIN)["org_path"] == str(repo / ORG_PATH)
+
+
+def test_org_selection_is_canonical_without_searching_other_files(repo):
+    write(repo / "org.json", json.dumps(live_tree()))
+    before = snapshot(repo)
+    with pytest.raises(bootstrap.BootstrapError, match="Missing canonical organization"):
+        bootstrap.check_runtime(repo, source=PLUGIN)
+    with pytest.raises(FileNotFoundError, match="Missing canonical organization"):
+        owner._org_file(repo)
+    with pytest.raises(FileNotFoundError, match="Missing canonical organization"):
+        owner.main(["--root", str(repo), "--owner", "src/shared/file.py"])
+    assert owner._org_file(repo, allow_uninstalled=True) == repo / ORG_PATH
+    assert snapshot(repo) == before
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_org_selection_accepts_an_explicit_candidate_without_changing_live_config(repo, absolute, capsys):
+    write(repo / ORG_PATH, json.dumps(initial_org()))
+    relative = Path("proposals/candidate.json")
+    candidate = repo / relative
+    write(candidate, json.dumps(live_tree()))
+    selected = candidate if absolute else relative
+    before = snapshot(repo)
+    assert owner._org_file(repo, explicit=selected) == candidate
+    assert owner._org_file(repo) == repo / ORG_PATH
+    assert bootstrap.check_runtime(repo, org_path=selected, source=PLUGIN)["org_path"] == str(candidate)
+    assert bootstrap.check_runtime(repo, source=PLUGIN)["org_path"] == str(repo / ORG_PATH)
+    for options, expected in (([], "main"), (["--org", str(selected)], "coordinator")):
+        assert owner.main(["--root", str(repo), "--owner", "src/shared/file.py", *options]) == 0
+        assert json.loads(capsys.readouterr().out)["owner"] == expected
+    assert snapshot(repo) == before
+    candidate.unlink()
+    with pytest.raises(bootstrap.BootstrapError, match="Missing organization candidate"):
+        bootstrap.check_runtime(repo, org_path=selected, source=PLUGIN)
+    with pytest.raises(FileNotFoundError, match="Missing organization candidate"):
+        owner._org_file(repo, explicit=selected)
+    with pytest.raises(FileNotFoundError, match="Missing organization candidate"):
+        owner.main(["--root", str(repo), "--org", str(selected), "--owner", "src/shared/file.py"])
+    with pytest.raises(FileNotFoundError, match="Missing organization candidate"):
+        owner.main(["--root", str(repo), "--split-baseline", str(selected)])
+    assert owner._org_file(repo, explicit=selected, allow_uninstalled=True) == candidate
+    before.pop(relative.as_posix())
+    assert snapshot(repo) == before
+
+
+def test_readiness_compares_canonical_assets_and_explicit_candidate_without_writes(repo):
+    bootstrap.bootstrap_repo(repo, source=PLUGIN)
+    write(repo / "org.json", "{not live config")
+    candidate = repo / "proposals/candidate.json"
+    write(candidate, json.dumps(initial_org()))
+    before = snapshot(repo)
+    for selected in (None, candidate, candidate.relative_to(repo)):
+        result = bootstrap.check_runtime(repo, org_path=selected, source=PLUGIN)
+        assert result == {"status": "ok", "drift": [], "org_path": str(candidate if selected else repo / ORG_PATH)}
+        assert snapshot(repo) == before
+    changed = ".github/agent-org/loops/leaf.md"
+    write(repo / changed, "changed")
+    before = snapshot(repo)
+    assert bootstrap.check_runtime(repo, source=PLUGIN)["drift"] == [changed]
+    assert snapshot(repo) == before
+
+
+def test_installed_evolved_runtime_still_bootstraps_stable_fresh_defaults(repo, tmp_path):
+    write(repo / ORG_PATH, json.dumps(live_tree()))
+    bootstrap.bootstrap_repo(repo, source=PLUGIN)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    git(fresh, "init", "-q")
+    # Same selected profiles as the installed assets, independent of the source's live state.
+    result = bootstrap.bootstrap_repo(
+        fresh, source=repo / ".github/agent-org", collaboration="hybrid", scope=["src/**"],
+    )
+    assert result["org"]["version"] == 3
+    assert result["org"]["root"] == "main"
+    assert [n["id"] for n in result["org"]["nodes"]] == ["main"]
+    assert not (fresh / "org.json").exists()
 
 
 def test_existing_split_tree_is_not_reset(repo):
     org = live_tree()
     original = json.dumps(org, indent=4).encode("utf-8")
-    write(repo / "org.json", original)
+    write(repo / ORG_PATH, original)
     result = bootstrap.bootstrap_repo(
         repo, root_name=org["root"], scope=org["scope"], collaboration=org["collaboration"], source=PLUGIN
     )
     assert result["org"] == org
-    assert (repo / "org.json").read_bytes() == original
+    assert (repo / ORG_PATH).read_bytes() == original
     assert loop_reference((repo / ".github" / "agents" / "coordinator.md").read_bytes()) == (
         ".github/agent-org/loops/parent.md"
     )
@@ -531,7 +677,7 @@ def test_installed_source_can_render_promoted_roles_and_rebootstrap(repo):
     for node in org["nodes"]:
         fields = frontmatter(rendered[f".github/agents/{node['id']}.md"])
         assert fields["user-invocable"] is (node["id"] == org["root"])
-    write(repo / "org.json", json.dumps(org, indent=2))
+    write(repo / ORG_PATH, json.dumps(org, indent=2))
     for node in org["nodes"]:
         relative = f".github/agents/{node['id']}.md"
         write(repo.joinpath(*relative.split("/")), rendered[relative])
@@ -586,7 +732,7 @@ def test_installed_runtime_shared_session_contract(repo, storage):
     assert run["base_sha"] == base_sha
     tree = Path(run["path"])
     assert tree.is_dir()
-    assert json.loads((tree / "org.json").read_text(encoding="utf-8")) == result["org"]
+    assert json.loads((tree / ORG_PATH).read_text(encoding="utf-8")) == result["org"]
     for relative, content in bootstrap.runtime_files(result["org"], PLUGIN).items():
         assert tree.joinpath(*relative.split("/")).read_bytes() == content, relative
     for command in ("integrate", "cleanup"):
@@ -610,6 +756,7 @@ def test_linked_worktree_exclusions_use_git_common_dir(repo, tmp_path):
     assert common_exclude == exclude_file(linked)
     assert common_exclude.read_bytes().startswith(b"# human excludes without a final newline\n")
     assert not (repo / "org.json").exists()
+    assert not (repo / ORG_PATH).exists()
     assert git(linked, "status", "--porcelain", "--untracked-files=all").stdout == ""
     again = bootstrap.bootstrap_repo(linked, root_name="linked-root", source=PLUGIN)
     assert again["exclude_added"] == []
@@ -648,6 +795,7 @@ def test_cli_reports_non_git_error_without_mutating_directory(tmp_path):
     assert "existing Git worktree" in json.loads(result.stderr)["error"]
     assert not (tmp_path / ".git").exists()
     assert not (tmp_path / "org.json").exists()
+    assert not (tmp_path / ORG_PATH).exists()
 
 
 def test_manifest_and_schema_configuration():

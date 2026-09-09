@@ -18,7 +18,7 @@ TOOL = Path(__file__).resolve().parent.parent / "plugin" / "tools" / "owner_vali
 
 @pytest.fixture
 def git_repo(sandbox):
-    return lambda files, org_dict: sandbox({"org.json": json.dumps(org_dict), **files})
+    return lambda files, org_dict: sandbox({ov.ORG_PATH: json.dumps(org_dict), **files})
 
 
 def node(nid, domain=None, excludes=None, parent=None, children=None, mode=None):
@@ -387,13 +387,29 @@ def test_cli_owner_exit_codes(git_repo):
     org_one = {"version": 3, "root": "main", "nodes": [
         {"id": "main", "charter": {"domain": ["a/**"]}, "parent": None, "children": [], "mode": "Leaf"}]}
     repo = git_repo({"a/x.txt": "1"}, org_one)
-    org_path = str(repo / "org.json")
+    org_path = str(repo / ov.ORG_PATH)
     owned = subprocess.run([sys.executable, str(TOOL), "--owner", "a/x.txt", "--org", org_path],
                            capture_output=True, text=True)
     assert owned.returncode == 0, owned.stderr
     unowned = subprocess.run([sys.executable, str(TOOL), "--owner", "top.txt", "--org", org_path],
                              capture_output=True, text=True)
     assert unowned.returncode == 1, unowned.stdout  # a path no node owns exits non-zero
+
+
+def test_cli_uses_canonical_config_and_only_selects_explicit_candidates(git_repo):
+    canonical = org("canonical", [node("canonical", ["**"], mode="Leaf")])
+    candidate = org("candidate", [node("candidate", ["**"], mode="Leaf")])
+    repo = git_repo({"a/x.txt": "1", "org.json": "{not live configuration"}, canonical)
+    proposal = repo / "candidate.json"
+    proposal.write_text(json.dumps(candidate), encoding="utf-8")
+    for options, expected in (([], "canonical"), (["--org", str(proposal)], "candidate")):
+        result = subprocess.run(
+            [sys.executable, str(TOOL), "--root", str(repo), "--owner", "a/x.txt", *options],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout)["owner"] == expected
+    assert json.loads((repo / ov.ORG_PATH).read_text(encoding="utf-8")) == canonical
 
 
 # --- split-transition validator (design §2.3, §3.6) -------------------------------------------------
@@ -408,8 +424,10 @@ def _root_split():
     return old, new
 
 
-def test_split_valid_root_split():
+@pytest.mark.parametrize("version", [-10, 0, 1, 3, 4, 5, 100])
+def test_split_valid_root_split(version):
     old, new = _root_split()
+    old["version"], new["version"] = version, version + 1
     r = ov.check_split(old, new, ["a/x", "b/y", "root.txt"])
     assert r["status"] == "ok", r
 
@@ -557,7 +575,7 @@ def test_hook_cli_warn_allows_and_logs_foreign(git_repo):
     # record 'a' as the acting node for session S2, then S2 writes into b/ (foreign)
     ov.record_acting({"sessionId": "S2", "cwd": str(repo), "prompt": "AgentOrgActingNode: a"})
     pl = json.dumps(_payload("edit", str(repo / "b" / "x.py"), str(repo), sid="S2"))
-    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / "org.json")],
+    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(repo / ov.ORG_PATH)],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout)["permissionDecision"] == "allow", p.stdout   # warn = allow
     log = repo / ".git" / "agent-org" / "foreign" / "S2" / "S2.jsonl"
@@ -571,21 +589,80 @@ def test_hook_cli_enforce_denies_foreign(git_repo):
     repo = git_repo({"a/keep.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
     ov.record_acting({"sessionId": "S3", "cwd": str(repo), "prompt": "AgentOrgActingNode: a"})
     pl = json.dumps(_payload("edit", str(repo / "b" / "x.py"), str(repo), sid="S3"))
-    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--mode", "enforce", "--org", str(repo / "org.json")],
+    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--mode", "enforce", "--org", str(repo / ov.ORG_PATH)],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout)["permissionDecision"] == "deny", p.stdout
 
 
 def test_hook_cli_allows_when_no_org(tmp_path):
-    # a non-agent-org repo (no org.json) must never be disturbed by the plugin hook
+    # A non-agent-org repo (no installed configuration) must not be disturbed by the plugin hook.
     d = tmp_path
     pl = json.dumps(_payload("create", str(d / "anything.txt"), str(d)))
-    p = subprocess.run([sys.executable, str(TOOL), "--hook", "--org", str(d / "org.json")],
+    p = subprocess.run([sys.executable, str(TOOL), "--hook"],
                        input=pl, capture_output=True, text=True)
     assert json.loads(p.stdout) == {}, p.stdout
 
 
+def test_hook_does_not_treat_an_unrelated_root_file_as_an_installation(tmp_path):
+    (tmp_path / "org.json").write_text(json.dumps(_HOOK_ORG), encoding="utf-8")
+    call = _payload("create", str(tmp_path / "a/new.txt"), str(tmp_path), sid="uninstalled")
+    assert ov.process_hook(call) == {}
+    assert ov.record_acting({
+        "cwd": str(tmp_path), "sessionId": "uninstalled", "prompt": "AgentOrgActingNode: a",
+    }) is None
+
+
+@pytest.mark.parametrize("content", [None, "{"])
+def test_incomplete_installation_fails_closed_without_using_other_config(git_repo, content):
+    repo = git_repo({"a/x.txt": "1", "org.json": json.dumps(_HOOK_ORG)}, _HOOK_ORG)
+    canonical = repo / ov.ORG_PATH
+    if content is None:
+        canonical.unlink()
+    else:
+        canonical.write_text(content, encoding="utf-8")
+    call = _payload("create", str(repo / "a/new.txt"), str(repo))
+    decision = ov.process_hook(call)
+    assert decision["permissionDecision"] == "deny"
+    assert "configuration audit failed" in decision["permissionDecisionReason"]
+    warning = ov.process_hook(call, after=True)
+    assert "configuration audit failed" in warning["additionalContext"]
+
+
 # --- usage log + split-advice (parent's over-burden signal) -----------------------------------------
+
+@pytest.fixture
+def root_split_repo(git_repo):
+    return git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
+
+
+@pytest.mark.parametrize("tool", [
+    TOOL,
+    TOOL.parents[2] / ".github" / "agent-org" / "tools" / "owner_validator.py",
+], ids=["plugin", "installed"])
+@pytest.mark.parametrize("agent,is_root", [("root", True), ("a", False)])
+@pytest.mark.parametrize("tokens,limits,advised", [
+    (0, [], False),
+    (150000, [], True),
+    (60, ["--window", "100", "--threshold", "0.5"], True),
+], ids=["small", "default-usage-burden", "custom-limits"])
+def test_root_split_check_cli_uses_org_root_and_existing_advice(root_split_repo, tool, agent, is_root,
+                                                             tokens, limits, advised):
+    ov.usage_record(str(root_split_repo), agent, tokens)
+    common = [sys.executable, str(tool), "--root", str(root_split_repo), *limits]
+    advice = subprocess.run([*common, "--split-advice", agent],
+                            capture_output=True, text=True, encoding="utf-8", check=True)
+    result = subprocess.run([*common, "--root-split-check", agent],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stdout + result.stderr
+    advice = json.loads(advice.stdout)
+    assert advice["recommend_split"] is advised
+    assert json.loads(result.stdout) == {
+        "agent": agent,
+        "is_root": is_root,
+        "recommend_split": advised,
+        "reasons": advice["reasons"],
+    }
+
 
 def test_usage_record_and_split_advice_over_by_usage(git_repo):
     repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)

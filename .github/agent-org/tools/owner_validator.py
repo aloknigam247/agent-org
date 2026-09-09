@@ -1,6 +1,6 @@
 """owner-oracle: the deterministic coverage validator for agent-org.
 
-Computes ``owner(path)`` for a git repository's tracked files against ``org.json`` and reports
+Computes ``owner(path)`` for repository-root-relative files against ``.github/agent-org/org.json`` and reports
 coverage violations. This is the single source of truth for coverage — the ``splitter`` calls it
 pre-commit over a proposed tree, and the integration gate calls it over each change's diff. Coverage
 is never eyeballed. See the agent-org-design skill (§2.2, §2.7).
@@ -29,6 +29,8 @@ import sys
 import uuid
 from pathlib import Path
 
+ORG_PATH = ".github/agent-org/org.json"
+
 try:  # pathspec >= 0.11 exposes GitIgnoreSpec; older versions use the from_lines factory.
     from pathspec import GitIgnoreSpec
 
@@ -50,6 +52,14 @@ except ImportError:  # pragma: no cover - version fallback
             )
         )
         sys.exit(2)
+
+
+def _org_file(root, *, explicit=None, allow_uninstalled=False):
+    selected = Path(root).resolve() / (ORG_PATH if explicit is None else explicit)
+    if selected.is_file() or allow_uninstalled:
+        return selected
+    label = "canonical organization" if explicit is None else "organization candidate"
+    raise FileNotFoundError(f"Missing {label}: {selected}")
 
 
 def normalize(path: str) -> str:
@@ -431,11 +441,8 @@ def record_acting(payload):
         return None
     state_id(sid)
     root = git_root(payload.get("cwd") or ".")
-    if root is None or not (root / "org.json").exists():
+    if root is None:
         return None
-    org = json.loads((root / "org.json").read_text(encoding="utf-8"))
-    if context["node"] not in {n["id"] for n in org["nodes"]} | {"splitter"}:
-        raise ValueError(f"unknown acting node {context['node']!r}")
     d = _state_dir(payload.get("cwd"), "acting")
     file = d / sid
     if file.exists():
@@ -444,6 +451,13 @@ def record_acting(payload):
             if key in previous and key in context and previous[key] != context[key]:
                 raise ValueError(f"a session cannot change its bound {key}")
         context = {**previous, **context}
+    root, context = hook_workspace(payload, context)
+    selected = _org_file(root, allow_uninstalled=True)
+    if not selected.exists() and not (root / ".github/agent-org").exists():
+        return None
+    org = json.loads(selected.read_text(encoding="utf-8-sig"))
+    if context["node"] not in {n["id"] for n in org["nodes"]} | {"splitter"}:
+        raise ValueError(f"unknown acting node {context['node']!r}")
     context.setdefault("run_id", sid)
     write_json(file, context)
     return context
@@ -620,29 +634,51 @@ def split_advice(org, agent, root, window=200000, threshold=0.60):
             "window": window, "threshold": threshold, "recommend_split": bool(reasons), "reasons": reasons}
 
 
-def process_hook(payload, org_path=None, mode="warn", after=False):
+def hook_workspace(payload, context):
     cwd = Path(payload.get("cwd") or ".").resolve()
     root = git_root(cwd) or cwd
-    context = payload.get("agentOrgContext") or _context_from_map(payload)
     if not context.get("run_id") and STATE_ID_RE.fullmatch(root.name) and git_root(cwd) is not None:
         candidate = git_common_dir(root) / "agent-org" / "runs" / f"{root.name}.json"
         if candidate.exists():
             run = json.loads(candidate.read_text(encoding="utf-8"))
             if Path(run["path"]).resolve() == root:
-                context = {**context, "run_id": run["session_id"], "worktree": str(root)}
+                # Infer a missing run, but never overwrite an explicit conflicting worktree.
+                context = {**context, "run_id": run["session_id"]}
+                context.setdefault("worktree", str(root))
     if context.get("run_id") and git_root(cwd) is not None:
         run_file = git_common_dir(root) / "agent-org" / "runs" / f"{state_id(context['run_id'])}.json"
         if run_file.exists():
             run = json.loads(run_file.read_text(encoding="utf-8"))
+            if (
+                not run.get("ready") or run.get("session_id") != context["run_id"]
+                or Path(run["path"]).resolve() != Path(run["repo"]).resolve() / ".worktrees" / context["run_id"]
+                or git_common_dir(run["path"]) != git_common_dir(root)
+            ):
+                raise ValueError("Invalid bound agent-org run descriptor.")
+            if context.get("worktree") and Path(context["worktree"]).resolve() != Path(run["path"]).resolve():
+                raise ValueError("Acting context and run descriptor disagree about the worktree.")
             context = {**context, "worktree": run["path"]}
     if context.get("worktree"):
-        root = Path(context["worktree"]).resolve()
-    org_path = Path(org_path or "org.json")
-    if not org_path.is_absolute():
-        org_path = root / org_path
-    if not org_path.exists():
-        return {}
-    org = json.loads(org_path.read_text(encoding="utf-8"))
+        target = Path(context["worktree"]).resolve()
+        if git_root(target) != target or git_common_dir(target) != git_common_dir(root):
+            raise ValueError("Bound worktree is not in this repository; refusing wrong-worktree routing.")
+        root = target
+    return root, context
+
+
+def process_hook(payload, org_path=None, mode="warn", after=False):
+    try:
+        context = payload.get("agentOrgContext") or _context_from_map(payload)
+        root, context = hook_workspace(payload, context)
+        selected = _org_file(root, explicit=org_path, allow_uninstalled=True)
+        if not selected.exists() and not (root / ".github/agent-org").exists():
+            return {}
+        org = json.loads(selected.read_text(encoding="utf-8-sig"))
+    except (KeyError, OSError, TypeError, ValueError, subprocess.CalledProcessError) as error:
+        message = f"agent-org: configuration audit failed: {error}"
+        return {"additionalContext": message} if after else {
+            "permissionDecision": "deny", "permissionDecisionReason": message,
+        }
     violations = check_tree(org)
     if violations:
         message = "agent-org: invalid organization: " + "; ".join(v["evidence"] for v in violations)
@@ -685,14 +721,14 @@ def _run_record_acting():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="agent-org owner-oracle / coverage validator")
-    parser.add_argument("--org", default="org.json", help="path to org.json")
+    parser.add_argument("--org", help=f"explicit candidate path; normal runtime uses {ORG_PATH}")
     parser.add_argument("--root", default=".", help="repo root for git ls-files")
     parser.add_argument("--paths", nargs="*", help="explicit paths to check instead of git ls-files")
     parser.add_argument("--owner", help="print the owner of a single path and exit")
     parser.add_argument("--acting", help="integration-gate containment: assert changed paths are owned by this node id")
     parser.add_argument("--size", help="split self-check: report the domain-size proxy for this node id")
     parser.add_argument("--split-baseline",
-                        help="validate a split: compare this old org.json against --org (the new tree)")
+                        help="validate an add-children split: compare this explicit baseline against --org")
     parser.add_argument("--window", type=int, default=200000, help="context window in tokens (default 200000)")
     parser.add_argument("--threshold", type=float, default=0.60, help="split fraction of the window (default 0.60)")
     parser.add_argument("--hook", action="store_true",
@@ -706,6 +742,8 @@ def main(argv=None):
     parser.add_argument("--tokens", type=int, default=0, help="token count for --usage-record")
     parser.add_argument("--split-advice", metavar="NODE",
                         help="advise whether NODE is over-burdened (domain size + peak usage) -> split")
+    parser.add_argument("--root-split-check", metavar="NODE",
+                        help="report whether NODE is the org root and its current split recommendation")
     parser.add_argument("--checkpoint", action="store_true", help="record the reconciled hybrid source snapshot")
     parser.add_argument("--drift", action="store_true", help="report managed files changed since reconciliation")
     parser.add_argument("--foreign", action="store_true", help="read foreign-write audit records")
@@ -721,16 +759,14 @@ def main(argv=None):
         return 0
 
     if args.hook or args.post_hook:
-        return _run_hook(Path(args.org), mode=args.mode, after=args.post_hook)
+        return _run_hook(args.org, mode=args.mode, after=args.post_hook)
 
     if args.foreign:
         print(json.dumps({"records": foreign_records(args.root, args.session)}, indent=2))
         return 0
 
-    org_path = Path(args.org)
-    if not org_path.is_absolute():
-        org_path = Path(args.root) / org_path
-    org = json.loads(org_path.read_text(encoding="utf-8"))
+    org_path = _org_file(args.root, explicit=args.org)
+    org = json.loads(org_path.read_text(encoding="utf-8-sig"))
 
     if args.checkpoint:
         checkpoint(org, args.root)
@@ -741,8 +777,12 @@ def main(argv=None):
         print(json.dumps(drift(org, args.root), indent=2))
         return 0
 
-    if args.split_advice:
-        result = split_advice(org, args.split_advice, args.root, args.window, args.threshold)
+    if args.split_advice or args.root_split_check:
+        agent = args.split_advice or args.root_split_check
+        result = split_advice(org, agent, args.root, args.window, args.threshold)
+        if args.root_split_check:
+            result = {"agent": agent, "is_root": org["root"] == agent,
+                      "recommend_split": result["recommend_split"], "reasons": result["reasons"]}
         print(json.dumps(result, indent=2))
         return 0
 
@@ -752,7 +792,8 @@ def main(argv=None):
         return 0 if result["status"] in {"owned", "unmanaged"} else 1
 
     if args.split_baseline:
-        old = json.loads(Path(args.split_baseline).read_text(encoding="utf-8"))
+        baseline = _org_file(args.root, explicit=args.split_baseline)
+        old = json.loads(baseline.read_text(encoding="utf-8-sig"))
         paths = [normalize(p) for p in args.paths] if args.paths is not None else git_tracked(args.root)
         result = check_split(old, org, paths)
         print(json.dumps(result, indent=2))

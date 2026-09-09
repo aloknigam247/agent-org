@@ -2,7 +2,8 @@
 
 ## Orient and isolate
 
-Read `org.json` and your live charter. Read the installed agent-org instruction profiles if they were not
+Read `.github/agent-org/org.json` and your live charter. All ownership paths and globs remain relative to the
+repository root, not the config directory. Read the installed agent-org instruction profiles if they were not
 already supplied. Your node identity comes from `AgentOrgActingNode`, never from a shared worktree pathname.
 Follow the selected collaboration profile's orientation step before preparing a plan.
 
@@ -71,8 +72,11 @@ Shared worktrees isolate root sessions; they do not serialize siblings, indexes,
    direct child if that owner is in its subtree; otherwise return unresolved work to your own parent.
    Never repair a descendant's files yourself.
 4. **Validate and report.** Require the owning children to pass their checks and resolve in-scope coverage
-   gaps. Check each child's `owner_validator.py --split-advice <child-id>` result and propose growth on its
-   behalf when needed. Return aggregate results and unresolved work upward. Only the root performs
+   gaps. The org runtime now appends each child's authoritative token usage and `--split-advice` result to
+   the child's completion automatically, so you receive it even when the child did not self-report; still
+   confirm each child's `owner_validator.py --split-advice <child-id>` signal and PROPOSE growth on its
+   behalf when advised. Advice never changes topology or charters on its own — a human approves every split.
+   Return aggregate results and unresolved work upward. Only the root performs
    integration and the selected collaboration profile's checkpoint, after reconciliation.
 
 ## Finish
@@ -82,8 +86,10 @@ tool when its reference is needed, and invoke `agent-org-wiki-curate` before rec
 read SKILL.md as a substitute for invoking a registered skill. If a skill was added during this session, request
 `/skills reload` and surface that discovery requirement instead of claiming the skill is already available.
 Run the task's targeted checks and the owner validator. Report touched paths, validation, and unresolved
-foreign changes. Query `owner_validator.py --split-advice` with your node id; return a SplitProposal when
-advised, using the shape in `.github\agents\splitter.md`. Do not mutate the organization yourself.
+foreign changes. As the final step of every task, including trivial or read-only ones, query
+`owner_validator.py --split-advice` with your node id, state its result, and when a split is advised return a
+SplitProposal using the shape in `.github\agents\splitter.md`; a top node has no parent to surface it otherwise.
+Do not mutate the organization yourself.
 
 After reconciliation, only the root integrates and cleans up. Use the source repo and run id from the descriptor:
 

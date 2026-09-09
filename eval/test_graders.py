@@ -150,8 +150,8 @@ def test_containment_skipped_for_parent(sandbox):
 # --- H3: attribution uses the immutable baseline org, not one the agent rewrote --------------------
 
 def test_grades_against_baseline_not_rewritten_org(sandbox):
-    # the agent touched a foreign path AND rewrote org.json to "own" everything; attribution must
-    # still use the baseline ORG (a owns region_a only), so routing and containment fail.
+    # The agent touched a foreign path AND rewrote .github/agent-org/org.json to "own" everything;
+    # attribution must still use the baseline ORG (a owns region_a only).
     rewritten = {"version": 1, "root": "a",
                  "nodes": [{"id": "a", "charter": {"domain": ["**"]}, "parent": None,
                             "children": [], "mode": "Leaf"}]}
@@ -170,6 +170,7 @@ def test_broken_final_org_fails_coverage(sandbox):
     m = {"id": "t", "agent": "a"}
     g = graders.grade(m, ORG, [], sandbox(FILES), "ok", exit_code=0, timed_out=False, final_org=None)
     assert check(g, "coverage")["result"] == "fail"
+    assert ".github/agent-org/org.json" in check(g, "coverage")["evidence"]
     assert g["passed"] is False
 
 
@@ -276,17 +277,20 @@ _GOOD_ORG = {"version": 3, "root": "main", "nodes": [
 @pytest.fixture
 def _fixture(file_tree):
     return lambda org, extra_seed=None: file_tree({
-        "seed/org.json": json.dumps(org),
+        f"seed/{run.ORG_PATH.as_posix()}": json.dumps(org),
         **{f"seed/{rel}": content for rel, content in (extra_seed or {}).items()},
     })
 
 
-def test_preflight_accepts_valid_fixture(_fixture):
-    assert run.preflight(_fixture(_GOOD_ORG), {"id": "t", "agent": "main"}) == []
+@pytest.mark.parametrize("version", [-1, 0, 1, 3, 5, 42])
+def test_preflight_accepts_integer_evolution_counter(_fixture, version):
+    org = {**_GOOD_ORG, "version": version}
+    assert run.preflight(_fixture(org), {"id": "t", "agent": "main"}) == []
 
 
-def test_preflight_rejects_bad_schema_version(_fixture):
-    probs = run.preflight(_fixture({**_GOOD_ORG, "version": 1}), {"id": "t", "agent": "main"})
+@pytest.mark.parametrize("version", [None, True, False, "3", 1.5])
+def test_preflight_rejects_noninteger_version(_fixture, version):
+    probs = run.preflight(_fixture({**_GOOD_ORG, "version": version}), {"id": "t", "agent": "main"})
     assert any("schema" in p for p in probs), probs
 
 
@@ -303,7 +307,81 @@ def test_preflight_rejects_baseline_coverage_gap(_fixture):
     assert any("coverage" in p for p in probs), probs
 
 
-# --- host-mode invocation omits --agent so the Host performs the hardcoded entry to main -----------
+@pytest.mark.parametrize("canonical_state", ["missing", "malformed"])
+def test_preflight_requires_readable_canonical_org(_fixture, canonical_state):
+    fixture = _fixture(_GOOD_ORG)
+    canonical = fixture / "seed" / run.ORG_PATH
+    if canonical_state == "missing":
+        canonical.unlink()
+    else:
+        canonical.write_text("{invalid", encoding="utf-8")
+    problems = run.preflight(fixture, {"id": "canonical-layout", "agent": "main"})
+    assert any("fixture organization unreadable" in problem for problem in problems), problems
+    if canonical_state == "missing":
+        assert not canonical.exists()
+    else:
+        assert canonical.read_text(encoding="utf-8") == "{invalid"
+
+
+def test_preflight_ignores_unrelated_root_file(_fixture):
+    fixture = _fixture(_GOOD_ORG, {"org.json": "{not an installed organization"})
+    assert run.preflight(fixture, {"id": "canonical-layout", "agent": "main"}) == []
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    sorted(path.parent for path in (Path(__file__).parent / "fixtures").glob("*/manifest.yml")),
+    ids=lambda fixture: fixture.name,
+)
+def test_repository_fixtures_use_canonical_installed_layout(fixture):
+    seed = fixture / "seed"
+    assert seed.is_dir()
+    assert (seed / run.ORG_PATH).is_file()
+    org = run._fixture_org(fixture)
+    canonical = run.ORG_PATH.as_posix()
+    if run.ov.managed(org, canonical):
+        assert run.ov.owners_of(run.ov.compile_nodes(org["nodes"]), canonical) == [org["root"]]
+    else:
+        assert org["scope"] == ["managed/**"]  # Preserve the partial fixture's unmanaged config.
+    manifest = yaml.safe_load((fixture / "manifest.yml").read_text(encoding="utf-8"))
+    assert run.preflight(fixture, manifest) == []
+
+
+def test_sandbox_assembly_uses_only_independent_fixture_org(_fixture, tmp_path):
+    org = {
+        "version": 3, "root": "archivist", "collaboration": "hybrid",
+        "scope": ["records/**", ".github/**", "wiki/**"], "storage": "tracked",
+        "nodes": [
+            {"id": "archivist", "parent": None, "children": [], "mode": "Leaf",
+             "charter": {"domain": ["records/**", ".github/**", "wiki/**"],
+                         "concerns": ["independent archive fixture"], "excludes": []}},
+        ],
+    }
+    artifact = "wiki/archivist/layout.md"
+    fixture = _fixture(org, {
+        "records/index.md": "archive",
+        artifact: (
+            "---\nowner: archivist\n"
+            "sources: [.github/agent-org/org.json, records/index.md]\n---\nArchive layout.\n"
+        ),
+    })
+    sandbox = tmp_path / "assembled"
+    sandbox.mkdir()
+    assert run.build_sandbox(fixture, sandbox)
+    assert run._read_org(sandbox) == org
+    assert sorted(file.name for file in (sandbox / ".github" / "agents").glob("*.md")) == [
+        "archivist.md", "splitter.md",
+    ]
+    assert (sandbox / ".github/instructions/agent-org.scope-partial.instructions.md").is_file()
+    assert (sandbox / ".github/instructions/agent-org.collaboration-hybrid.instructions.md").is_file()
+    assert run.ov.validate(org, run.ov.git_tracked(sandbox))["status"] == "ok"
+    assert run.bv.check_bundle(org, sandbox)["status"] == "ok"
+    stale = run.bv.check_freshness(sandbox, [run.ORG_PATH.as_posix()])
+    assert [violation["path"] for violation in stale["violations"]] == [artifact]
+    assert run.bv.check_freshness(sandbox, [run.ORG_PATH.as_posix(), artifact])["status"] == "ok"
+
+
+# --- host-mode invocation omits --agent so the Host resolves the fixture's configured root ---------
 
 def test_host_mode_omits_agent_flag():
     usage = Path(tempfile.gettempdir()) / "u.json"
@@ -325,7 +403,7 @@ def test_partial_unmanaged_paths_do_not_fail_routing(sandbox):
 
 def test_scope_cannot_be_rewritten_to_hide_failed_coverage(sandbox):
     altered = {**ORG, "scope": ["nonexistent/**"]}
-    result = graders.grade({"agent": "a"}, ORG, ["org.json"], sandbox(FILES), final_org=altered)
+    result = graders.grade({"agent": "a"}, ORG, [run.ORG_PATH.as_posix()], sandbox(FILES), final_org=altered)
     assert check(result, "configuration")["result"] == "fail"
 
 
@@ -463,13 +541,15 @@ def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch
     seed.mkdir(parents=True)
     org = {"version": 3, "root": "director", "nodes": [
         {"id": "director", "parent": None, "children": ["inbound", "outbound"], "mode": "Parent",
-         "charter": {"domain": [".github/**", ".gitignore", "org.json"], "concerns": [], "excludes": []}},
+         "charter": {"domain": [".github/**", ".gitignore", "/.github/agent-org/org.json"],
+                     "concerns": [], "excludes": []}},
         {"id": "inbound", "parent": "director", "children": [], "mode": "Leaf",
          "charter": {"domain": ["inbound/**"], "concerns": [], "excludes": []}},
         {"id": "outbound", "parent": "director", "children": [], "mode": "Leaf",
          "charter": {"domain": ["outbound/**"], "concerns": [], "excludes": []}},
     ]}
-    (seed / "org.json").write_text(json.dumps(org), encoding="utf-8")
+    (seed / run.ORG_PATH).parent.mkdir(parents=True)
+    (seed / run.ORG_PATH).write_text(json.dumps(org), encoding="utf-8")
     manifest = {
         "agent": "director", "check_role_refs": True, "id": "shared-driver", "intent": "Plan and dispatch",
         "expected_owner": ["inbound", "outbound"], "required_touched_owners": ["inbound", "outbound"],
@@ -481,6 +561,8 @@ def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch
         assert acting == "director"
         assert "AGENT_ORG_ACTING" not in env
         assert (workspace / ".git").is_file()
+        assert run._read_org(workspace) == org
+        assert not (workspace / ".github" / "agents" / "main.md").exists()
         assert not (workspace / ".github" / "agent-org" / "tools" / "bundle_validator.py").exists()
         observed["workspace"] = workspace
         run.ov.record_acting({
@@ -512,4 +594,39 @@ def test_runner_reuses_one_workspace_for_root_and_children(tmp_path, monkeypatch
     assert not result.get("fixture_error"), result
     assert result["runs"][0]["grade"]["passed"], result["runs"][0]["grade"]
     assert result["runs"][0]["changed_paths"] == ["inbound/result.txt", "outbound/result.txt"]
+    assert not observed["workspace"].exists()
+
+
+@pytest.mark.parametrize("final_state", ["missing", "malformed", "rewritten"])
+def test_runner_rejects_invalid_canonical_final_org(_fixture, monkeypatch, final_state):
+    fixture = _fixture(_GOOD_ORG)
+    manifest = {"id": "canonical-final", "agent": "main", "intent": "Exercise final organization grading"}
+    (fixture / "manifest.yml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    observed = {}
+
+    def invoke(_manifest, workspace, _env, _model, _effort, _timeout, acting, _run_id):
+        assert acting == "main"
+        assert run._read_org(workspace) == _GOOD_ORG
+        observed["workspace"] = workspace
+        canonical = workspace / run.ORG_PATH
+        if final_state == "missing":
+            canonical.unlink()
+        elif final_state == "malformed":
+            canonical.write_text("{invalid", encoding="utf-8")
+        elif final_state == "rewritten":
+            canonical.write_text(json.dumps({**_GOOD_ORG, "scope": ["nonexistent/**"]}), encoding="utf-8")
+        return {
+            "response": "finished", "exit": 0, "timed_out": False, "duration_s": 1,
+            "usage": {}, "trajectory": [], "infra_error": None,
+        }
+
+    monkeypatch.setattr(run, "invoke", invoke)
+    monkeypatch.setattr(run, "copilot_env", lambda: {})
+    result = run.run_case(fixture, 1, None, None, False, judge=False)
+    assert not result.get("fixture_error"), result
+    captured = result["runs"][0]
+    assert captured["grade"]["passed"] is False
+    expected_check = "configuration" if final_state == "rewritten" else "coverage"
+    assert check(captured["grade"], expected_check)["result"] == "fail"
+    assert captured["changed_paths"] == [run.ORG_PATH.as_posix()]
     assert not observed["workspace"].exists()

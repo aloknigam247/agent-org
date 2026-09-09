@@ -8,7 +8,7 @@
       "children": ["ops", "cli"],
       "mode": "Parent",
       "charter": {
-        "domain": [".github/**", "org.json", "org.schema.json", ".gitignore"],
+        "domain": [".github/**", "/.github/agent-org/org.json", "org.schema.json", ".gitignore"],
         "concerns": ["shared config and cross-cutting infrastructure"],
         "excludes": []
       }

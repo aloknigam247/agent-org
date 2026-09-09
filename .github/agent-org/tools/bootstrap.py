@@ -9,9 +9,28 @@ import subprocess
 import sys
 from pathlib import Path
 
+ORG_PATH = ".github/agent-org/org.json"
+
 
 class BootstrapError(ValueError):
     """The requested overlay cannot be installed without a conflict."""
+
+
+def default_org():
+    """Stable canonical defaults, independent of every installed target."""
+    return {
+        "version": 3, "root": "main", "nodes": [{
+            "id": "main", "parent": None, "children": [], "mode": "Leaf",
+            "charter": {
+                "domain": ["**"],
+                "concerns": [
+                    "owns the configured scope until the first split",
+                    "does all work directly; proposes a gated split when overloaded",
+                ],
+                "excludes": [],
+            },
+        }],
+    }
 
 
 def _node_id(value):
@@ -99,17 +118,26 @@ def _assets(source):
 
 
 def runtime_files(org, source=None) -> dict[str, bytes]:
-    """Render an overlay without org.json; source may be a plugin or an installed runtime root."""
+    """Render runtime assets only, never a live config; safe for readiness staging."""
+    return _runtime_files(org, source, paths_only=False)
+
+
+def runtime_paths(org, source=None):
+    """Inventory without reading contents, so descriptor-known deletions remain integrable."""
+    return set(_runtime_files(org, source, paths_only=True))
+
+
+def _runtime_files(org, source, *, paths_only):
     config = _validate_org(org)
     assets = _assets(source)
     files = {}
 
     def copy(relative, path):
-        files[relative] = _read(path)
+        files[relative] = b"" if paths_only else _read(path)
 
-    template = _read(assets["template"]).decode("utf-8-sig").replace("\r\n", "\n")
+    template = "" if paths_only else _read(assets["template"]).decode("utf-8-sig").replace("\r\n", "\n")
     internal_visibility = "\nuser-invocable: false\n"
-    if internal_visibility not in template:
+    if not paths_only and internal_visibility not in template:
         raise BootstrapError("The node template must default to user-invocable: false.")
     files[".github/agent-org/templates/_node.template.md"] = template.encode("utf-8")
     for node in org["nodes"]:
@@ -140,13 +168,15 @@ def runtime_files(org, source=None) -> dict[str, bytes]:
         copy(f".github/agent-org/loops/{name}", assets["loops"] / name)
     for name in ("agent-org-design", "agent-org-wiki-curate"):
         copy(f".github/skills/{name}/SKILL.md", assets["skills"] / name / "SKILL.md")
-    for name in ("README.md", "bootstrap.py", "owner_validator.py", "requirements.txt", "worktree.py"):
+    for name in (
+        "README.md", "bootstrap.py",
+        "owner_validator.py", "requirements.txt", "worktree.py",
+    ):
         copy(f".github/agent-org/tools/{name}", assets["root"] / "tools" / name)
     hook = assets["root"] / "tools" / "hook.ps1"
     if hook.is_file():
         copy(".github/agent-org/tools/hook.ps1", hook)
     copy(".github/agent-org/org.schema.json", assets["root"] / "org.schema.json")
-    copy(".github/agent-org/seed/org.json", assets["root"] / "seed" / "org.json")
     copy(".github/hooks/agent-org.json", assets["hooks"])
 
     extension = assets["extension"]
@@ -227,19 +257,15 @@ def _exclude_append(existing, entries):
     return prefix + newline.join(entry.encode("utf-8") for entry in missing) + newline, missing
 
 
-def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents", storage="local", source=None) -> dict:
+def bootstrap_repo(
+    repo, *, root_name=None, scope=None, collaboration=None, storage=None, source=None,
+) -> dict:
     """Preflight and install without overwriting files, changing the index, or resetting a live tree."""
-    requested = _configuration({
-        "collaboration": collaboration,
-        "root": root_name,
-        "scope": ["**"] if scope is None else scope,
-        "storage": storage,
-    })
     repo, common = _git_paths(repo)
-    problem = _destination_problem(repo, "org.json")
+    problem = _destination_problem(repo, ORG_PATH)
     if problem:
         raise BootstrapError(problem)
-    org_file = repo / "org.json"
+    org_file = repo / ORG_PATH
     if org_file.exists():
         org_bytes = org_file.read_bytes()
         try:
@@ -249,24 +275,30 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
                 "Existing org.json is not a valid organization; it will not be overwritten."
             ) from error
         actual = _validate_org(org)
+    else:
+        org = default_org()
+        actual = _configuration(org)
+    requested = _configuration({
+        "collaboration": actual["collaboration"] if collaboration is None else collaboration,
+        "root": actual["root"] if root_name is None else root_name,
+        "scope": actual["scope"] if scope is None else scope,
+        "storage": actual["storage"] if storage is None else storage,
+    })
+    storage = requested["storage"]
+    if org_file.exists():
         conflicts = [field for field in requested if requested[field] != actual[field]]
         if conflicts:
             raise BootstrapError("Existing organization conflicts with requested " + ", ".join(conflicts) + ".")
     else:
-        seed = _assets(source)["root"] / "seed" / "org.json"
-        org = json.loads(_read(seed).decode("utf-8-sig"))
-        _validate_org(org)
-        if len(org["nodes"]) != 1 or org["nodes"][0]["mode"] != "Leaf":
-            raise BootstrapError("The canonical bootstrap seed must contain one Leaf.")
-        org["root"] = root_name
-        org["nodes"][0]["id"] = root_name
+        org["root"] = requested["root"]
+        org["nodes"][0]["id"] = requested["root"]
         org["nodes"][0]["charter"]["domain"] = list(requested["scope"])
         for field in ("collaboration", "scope", "storage"):
             org[field] = requested[field]
         org_bytes = (json.dumps(org, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
     desired = runtime_files(org, source=source)
-    desired["org.json"] = org_bytes
+    desired[ORG_PATH] = org_bytes
     desired = dict(sorted(desired.items()))
     tracked = {
         path.decode("utf-8").casefold()
@@ -330,11 +362,13 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
             exclude.parent.mkdir(parents=True, exist_ok=True)
             with exclude.open("ab") as file:
                 file.write(addition)
-    except OSError as error:
+    except (OSError, BootstrapError) as error:
         for relative in reversed(created):
             path = repo.joinpath(*relative.split("/"))
             if path.is_file() and path.read_bytes() == desired[relative]:
                 path.unlink()
+        if addition and exclude.is_file() and exclude.read_bytes() == exclude_bytes + addition:
+            exclude.write_bytes(exclude_bytes)
         raise BootstrapError(f"Bootstrap could not finish writing the overlay: {error}") from error
 
     return {
@@ -347,24 +381,52 @@ def bootstrap_repo(repo, *, root_name="main", scope=None, collaboration="agents"
     }
 
 
+def check_runtime(repo, *, org_path=None, source=None):
+    """Read-only canonical runtime readiness check, with an explicit candidate override."""
+    repo, _ = _git_paths(repo)
+    try:
+        file = repo / (ORG_PATH if org_path is None else org_path)
+        if not file.is_file():
+            label = "canonical organization" if org_path is None else "organization candidate"
+            raise FileNotFoundError(f"Missing {label}: {file}")
+        org = json.loads(file.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as error:
+        raise BootstrapError(str(error)) from error
+    desired = runtime_files(org, source)
+    drift = [
+        name for name, content in desired.items()
+        if _destination_problem(repo, name) or not (repo / name).is_file()
+        or not _same_content((repo / name).read_bytes(), content)
+    ]
+    return {"status": "drift" if drift else "ok", "drift": drift, "org_path": str(file)}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--collaboration", choices=("agents", "hybrid"), default="agents")
+    parser.add_argument("--collaboration", choices=("agents", "hybrid"))
     parser.add_argument("--repo", default=".", help="existing Git worktree root")
-    parser.add_argument("--root-name", default="main", help="root node id (default: main)")
+    parser.add_argument("--root-name", help="root node id (fresh default: main; reruns preserve live configuration)")
     parser.add_argument("--scope", nargs="+", help="managed gitignore globs (default: **)")
-    parser.add_argument("--storage", choices=("local", "tracked"), default="local")
+    parser.add_argument("--storage", choices=("local", "tracked"))
+    parser.add_argument("--source", help="explicit plugin root or installed runtime root")
+    parser.add_argument("--check-runtime", action="store_true", help="read-only runtime-assets readiness comparison")
+    parser.add_argument("--org", help="explicit candidate config for --check-runtime only")
     args = parser.parse_args(argv)
     try:
-        result = bootstrap_repo(
-            args.repo, root_name=args.root_name, scope=args.scope,
-            collaboration=args.collaboration, storage=args.storage,
-        )
+        if args.check_runtime:
+            result = check_runtime(args.repo, org_path=args.org, source=args.source)
+        else:
+            if args.org:
+                raise BootstrapError("--org is only supported by the read-only --check-runtime operation.")
+            result = bootstrap_repo(
+                args.repo, root_name=args.root_name, scope=args.scope,
+                collaboration=args.collaboration, storage=args.storage, source=args.source,
+            )
     except (BootstrapError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    return 1 if result.get("status") == "drift" else 0
 
 
 if __name__ == "__main__":

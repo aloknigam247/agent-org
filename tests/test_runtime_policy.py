@@ -23,7 +23,7 @@ def org():
     return {
         "version": 3, "root": "hub", "collaboration": "hybrid", "scope": ["**"], "storage": "local",
         "nodes": [
-            node("hub", None, ["org.json", ".github/**", "shared/**"], ["east", "west"]),
+            node("hub", None, [".github/**", "shared/**"], ["east", "west"]),
             node("east", "hub", ["east/shared/**"], ["billing", "stock"]),
             node("billing", "east", ["billing/**"]),
             node("stock", "east", ["stock/**"]),
@@ -37,7 +37,8 @@ def org():
 @pytest.fixture
 def repo(tmp_path, org):
     subprocess.run(["git", "init", "-q", "-b", "trunk", str(tmp_path)], check=True)
-    (tmp_path / "org.json").write_text(json.dumps(org), encoding="utf-8")
+    (tmp_path / ".github" / "agent-org").mkdir(parents=True)
+    (tmp_path / oracle.ORG_PATH).write_text(json.dumps(org), encoding="utf-8")
     for folder in ("billing", "shipping", "stock"):
         (tmp_path / folder).mkdir()
         (tmp_path / folder / "data.txt").write_text("original", encoding="utf-8")
@@ -160,6 +161,8 @@ def test_prompt_examples_cannot_bind_or_rebind_a_session(repo):
     ],
 )
 def test_session_context_cannot_move_between_root_runs(repo, field, first, second):
+    if field == "AgentOrgWorktree":
+        first = str(repo)  # Initial binding must name a real worktree in this repository.
     common = {"cwd": str(repo), "sessionId": "child"}
     oracle.record_acting({**common, "prompt": f"AgentOrgActingNode: billing\n{field}: {first}\nWork"})
     with pytest.raises(ValueError, match="cannot change"):

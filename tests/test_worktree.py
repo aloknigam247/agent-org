@@ -16,6 +16,7 @@ import owner_validator as ov  # noqa: E402
 import worktree as wt  # noqa: E402
 
 TOOL = Path(wt.__file__).resolve()
+ORG_PATH = wt.ORG_PATH
 
 
 def git(root, *args):
@@ -36,7 +37,7 @@ def organization():
         "nodes": [
             {
                 "charter": {
-                    "domain": [".github/**", ".gitignore", "org.json", "shared/**"],
+                    "domain": [".github/**", ".gitignore", "shared/**"],
                     "excludes": [
                         ".github/skills/agent-org-inventory-*/**",
                         ".github/skills/agent-org-receipts-*/**",
@@ -93,7 +94,7 @@ def repo(tmp_path):
         ("config", "user.name", "Inventory Test"),
     ):
         git(root, *args)
-    write(root, "org.json", json.dumps(organization()))
+    write(root, ORG_PATH, json.dumps(organization()))
     for name in ("audit/ledger.txt", "inventory/stock.txt", "shared/notes.txt"):
         write(root, name, "baseline\n")
     git(root, "add", "--all")
@@ -103,7 +104,7 @@ def repo(tmp_path):
 
 
 def save_org(root, org):
-    write(root, "org.json", json.dumps(org))
+    write(root, ORG_PATH, json.dumps(org))
 
 
 def commit(root, message="test: prepare inventory change"):
@@ -141,6 +142,23 @@ def assert_preserved(repo, run):
     assert Path(run["path"]).is_dir()
     assert git(repo, "show-ref", "--verify", f"refs/heads/{run['branch']}")
     assert (ov.git_common_dir(repo) / "agent-org" / "runs" / f"{run['session_id']}.json").is_file()
+
+
+@pytest.mark.parametrize("version", [-10, 0, 1, 3, 4, 5, 100])
+def test_worktree_reads_only_canonical_config_without_a_version_floor(repo, version):
+    org = organization()
+    org["version"] = version
+    save_org(repo, org)
+    unrelated = write(repo, "org.json", "{not live configuration")
+    assert wt._read_org(repo) == org
+    assert unrelated.read_text() == "{not live configuration"
+
+
+def test_worktree_requires_canonical_config(repo):
+    (repo / ORG_PATH).unlink()
+    write(repo, "org.json", json.dumps(organization()))
+    with pytest.raises(FileNotFoundError, match="Missing canonical organization"):
+        wt._read_org(repo)
 
 
 def test_shared_reuse_from_source_child_and_grandchild(repo):
@@ -224,7 +242,7 @@ def test_descendant_split_and_shared_scope_changes_are_allowed(repo):
     write(tree, "shared/new.txt", "coordinator\n")
     result = wt.integrate(repo, run["session_id"])
     assert result["integrated"], result
-    assert ov.validate(json.loads((repo / "org.json").read_text()), ov.git_tracked(repo))["status"] == "ok"
+    assert ov.validate(json.loads((repo / ORG_PATH).read_text()), ov.git_tracked(repo))["status"] == "ok"
 
 
 @pytest.mark.parametrize("kind", ["committed", "staged", "unstaged", "untracked"])
@@ -277,7 +295,7 @@ def test_split_cannot_change_runtime_policy(repo, field, value):
     assert not result["integrated"], result
     assert result["reason"] in ("coverage", "split")
     assert git(repo, "rev-parse", "HEAD") == before
-    assert json.loads((tree / "org.json").read_text())[field] == value
+    assert json.loads((tree / ORG_PATH).read_text())[field] == value
     assert_preserved(repo, run)
 
 
@@ -404,8 +422,8 @@ def test_individually_valid_branches_cannot_merge_into_a_coverage_gap(repo):
     assert any(item.get("path") == "inventory/source-addition.txt" for item in result["violations"])
     assert git(repo, "rev-parse", "HEAD").strip() == source_commit
     assert (repo / "inventory" / "source-addition.txt").read_text() == "concurrent valid inventory file\n"
-    assert json.loads((repo / "org.json").read_text()) == organization()
-    assert json.loads((tree / "org.json").read_text()) == inventory_split(organization())
+    assert json.loads((repo / ORG_PATH).read_text()) == organization()
+    assert json.loads((tree / ORG_PATH).read_text()) == inventory_split(organization())
     assert not git(repo, "status", "--porcelain")
     assert_preserved(repo, run)
 
@@ -456,10 +474,16 @@ def test_commit_failure_never_bypasses_hooks_or_loses_session_data(repo, monkeyp
     assert_preserved(repo, run)
 
 
-def test_both_rename_endpoints_are_validated(repo):
+@pytest.mark.parametrize("kind", ["unstaged", "staged", "committed"])
+def test_both_rename_endpoints_are_validated(repo, kind):
     run = wt.create(repo, "renamed-unowned")
     tree = Path(run["path"])
-    git(tree, "mv", "inventory/stock.txt", "unowned-stock.txt")
+    (tree / "inventory/stock.txt").rename(tree / "unowned-stock.txt")
+    if kind == "staged":
+        git(tree, "add", "--all")
+    elif kind == "committed":
+        commit(tree)
+    assert {"inventory/stock.txt", "unowned-stock.txt"} <= set(ov.git_changed(tree, run["base_sha"]))
     assert {"inventory/stock.txt", "unowned-stock.txt"} <= set(wt._paths(tree, run["base_sha"]))
     before = git(tree, "status", "--porcelain=v1", "-z")
     result = wt.integrate(repo, run["session_id"])
@@ -569,7 +593,7 @@ def test_cleanup_preserves_dirty_source_work(repo):
 
 @pytest.fixture
 def local_repo(repo):
-    git(repo, "rm", "--cached", "org.json")
+    git(repo, "rm", "--cached", ORG_PATH)
     git(repo, "commit", "-q", "-m", "test: use a local organization")
     bootstrap.bootstrap_repo(repo, root_name="coordinator")
     write(repo, ".github/agent-org/tools/__pycache__/unwanted.pyc", "not copied\n")
@@ -594,7 +618,8 @@ def test_local_overlay_is_provisioned_without_status_noise_and_runs(local_repo):
     repo = local_repo
     run = wt.create(repo, "local-copy")
     tree = Path(run["path"])
-    assert (tree / "org.json").exists()
+    assert (tree / ORG_PATH).exists()
+    assert not (tree / "org.json").exists()
     assert (tree / ".github" / "agents" / "coordinator.md").exists()
     assert (tree / ".github" / "agents" / "splitter.md").exists()
     assert not (tree / "private.txt").exists()
@@ -614,7 +639,7 @@ def test_local_overlay_is_provisioned_without_status_noise_and_runs(local_repo):
     assert json.loads(result.stdout)["path"] == str(tree)
     assert not git(tree, "status", "--porcelain")
     assert not git(repo, "status", "--porcelain")
-    assert run["local_files"]["org.json"] == wt._digest((repo / "org.json").read_bytes())
+    assert run["local_files"][ORG_PATH] == wt._digest((repo / ORG_PATH).read_bytes())
     descriptor = ov.git_common_dir(repo) / "agent-org" / "runs" / "local-copy.json"
     assert json.loads(descriptor.read_text()) == run
     assert set(bootstrap.runtime_files(organization())) <= set(run["runtime_files"])
@@ -654,7 +679,7 @@ def test_local_split_configuration_and_new_definitions_persist_before_cleanup(lo
     write(tree, "inventory/receipts/new.txt", "receipt data\n")
     result = wt.integrate(repo, run["session_id"])
     assert result["integrated"], result
-    assert json.loads((repo / "org.json").read_text())["version"] == 2
+    assert json.loads((repo / ORG_PATH).read_text())["version"] == 2
     assert (repo / ".github" / "agents" / "receipts.md").read_text() == "receipts definition\n"
     assert (repo / ".github" / "agents" / "inventory.md").read_text() == "inventory parent definition\n"
     assert ".github/skills/agent-org-receipts-record/SKILL.md" in git(repo, "ls-files").splitlines()
@@ -694,7 +719,7 @@ def test_cleanup_does_not_overwrite_a_later_sessions_reconciled_overlay(local_re
 
 
 def test_known_unignored_overlay_is_excluded_without_hiding_other_agent_definitions(repo):
-    git(repo, "rm", "--cached", "org.json")
+    git(repo, "rm", "--cached", ORG_PATH)
     git(repo, "commit", "-q", "-m", "test: prepare unignored local overlay")
     write(repo, ".github/agents/coordinator.md", "generated definition\n")
     write(repo, ".github/agents/human.md", "unrelated definition\n")
@@ -711,7 +736,7 @@ def test_known_unignored_overlay_is_excluded_without_hiding_other_agent_definiti
     assert not git(tree, "status", "--porcelain")
     assert not git(repo, "status", "--porcelain")
     assert (tree / ".github" / "agents" / "human.md").read_text() == "unrelated definition\n"
-    git(repo, "check-ignore", "org.json", ".github/agents/coordinator.md", ".github/agent-org/tools/requirements.txt")
+    git(repo, "check-ignore", ORG_PATH, ".github/agents/coordinator.md", ".github/agent-org/tools/requirements.txt")
 
 
 @pytest.mark.parametrize("namespace", [".github/agent-org", ".github/extensions/agent-org"])

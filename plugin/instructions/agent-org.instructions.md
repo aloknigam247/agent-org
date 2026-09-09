@@ -16,7 +16,7 @@ profile still applies within its stated roles.
 
 ## Host procedure
 
-Use Windows and PowerShell. Read `org.json` to resolve `root`; route managed work to that named custom agent.
+Use Windows and PowerShell. Read `.github/agent-org/org.json` to resolve `root`; route managed work to that named custom agent.
 The selected scope and collaboration profiles supply only their respective policies. The Host is domain-less
 inside the managed area and gates organizational changes rather than implementing managed feature work.
 

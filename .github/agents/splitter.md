@@ -34,7 +34,7 @@ seams: ["parent-owned interface artifacts, if needed"]
 1. **Preflight without changing the live tree.** Assemble the proposed organization, preserving `root`,
    `collaboration`, `scope`, and `storage`. Apply the approved partition and increment `version` once.
    Validate the transition with
-   `python .github\agent-org\tools\owner_validator.py --org <proposal-file> --split-baseline org.json --root .`.
+   `python .github\agent-org\tools\owner_validator.py --org <proposal-file> --split-baseline .github/agent-org/org.json --root .`.
    Use a GUID-named proposal file in the Git common directory's `agent-org` metadata area, then remove it
    when finished. Resolve that directory with `git rev-parse --path-format=absolute --git-common-dir`.
    Check destination collisions for agent definitions and bundle moves too.
@@ -52,9 +52,9 @@ seams: ["parent-owned interface artifacts, if needed"]
    `loop: .github\agent-org\loops\leaf.md`. Do not put `loop` in frontmatter or add a self-reference.
    Preserve `user-invocable: true` only for `org.root`; all other nodes remain
    `user-invocable: false`, including newly created children and promoted non-root Parents.
-4. **Apply and revalidate.** Write the proposed `org.json` and affected definitions together, then validate
+4. **Apply and revalidate.** Write the proposed `.github/agent-org/org.json` and affected definitions together, then validate
    the actual worktree with
-   `python .github\agent-org\tools\owner_validator.py --org org.json --root .`.
+   `python .github\agent-org\tools\owner_validator.py --root .`.
    If validation fails, restore only your split-owned changes; return the failure without integrating.
 5. **Persist according to storage.** Rerun the installed bootstrap with the live configuration to register
    newly generated files and local exclude entries. Return the complete validated change set to the root.

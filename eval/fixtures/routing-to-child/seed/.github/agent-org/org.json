@@ -8,7 +8,7 @@
       "children": ["catalog", "members"],
       "mode": "Parent",
       "charter": {
-        "domain": [".github/**", "org.json", "org.schema.json", ".gitignore", "shared/**"],
+        "domain": [".github/**", "/.github/agent-org/org.json", "org.schema.json", ".gitignore", "shared/**"],
         "concerns": ["shared config and cross-cutting infrastructure"],
         "excludes": []
       }
