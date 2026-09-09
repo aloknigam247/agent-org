@@ -27,7 +27,9 @@ export function createOracle() {
     if (!found) return {};
     const args = ["-X", "utf8", found.tool];
     if (event === "usage") {
-      args.push("--usage-record", payload.node, "--tokens", String(payload.tokens), "--root", found.directory);
+      args.push("--usage-record", payload.node, "--session", payload.sessionId,
+        "--tokens", String(payload.tokens), "--root", found.directory);
+      if (payload.partial) args.push("--partial");
     } else if (event === "splitAdvice") {
       args.push("--split-advice", payload.node, "--root", found.directory);
     } else if (event === "rootSplitCheck") {

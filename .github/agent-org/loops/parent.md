@@ -72,12 +72,14 @@ Shared worktrees isolate root sessions; they do not serialize siblings, indexes,
    direct child if that owner is in its subtree; otherwise return unresolved work to your own parent.
    Never repair a descendant's files yourself.
 4. **Validate and report.** Require the owning children to pass their checks and resolve in-scope coverage
-   gaps. The org runtime now appends each child's authoritative token usage and `--split-advice` result to
-   the child's completion automatically, so you receive it even when the child did not self-report; still
-   confirm each child's `owner_validator.py --split-advice <child-id>` signal and PROPOSE growth on its
-   behalf when advised. Advice never changes topology or charters on its own — a human approves every split.
-   Return aggregate results and unresolved work upward. Only the root performs
-   integration and the selected collaboration profile's checkpoint, after reconciliation.
+   gaps. The org runtime appends each child's observed peak context and `--split-advice` result to the
+   child's completion automatically; still confirm each child's
+   `owner_validator.py --split-advice <child-id>` result. For EACH child's `recommend_split: true` verdict,
+   you MUST return a structured SplitProposal using the shape in `.github\agents\splitter.md`, preserving
+   or completing the child's proposal, and route it upward to the Host's human approve/edit/reject gate.
+   A verdict requires human triage: never treat it as optional advice, silently defer, or take no action.
+   Return aggregate results and unresolved work upward. Only the root performs integration and the selected
+   collaboration profile's checkpoint, after reconciliation. Topology and charters never change automatically.
 
 ## Finish
 
@@ -87,8 +89,10 @@ read SKILL.md as a substitute for invoking a registered skill. If a skill was ad
 `/skills reload` and surface that discovery requirement instead of claiming the skill is already available.
 Run the task's targeted checks and the owner validator. Report touched paths, validation, and unresolved
 foreign changes. As the final step of every task, including trivial or read-only ones, query
-`owner_validator.py --split-advice` with your node id, state its result, and when a split is advised return a
-SplitProposal using the shape in `.github\agents\splitter.md`; a top node has no parent to surface it otherwise.
+`owner_validator.py --split-advice` with your node id and state its result. A `recommend_split` result of true
+is a verdict a human must triage, not optional advice: you MUST return a structured SplitProposal (using the
+shape in `.github\agents\splitter.md`) and surface it so it reaches the human's approve/edit/reject gate.
+A top node surfaces it to the Host directly. Never downgrade a verdict to advisory or take no action.
 Do not mutate the organization yourself.
 
 After reconciliation, only the root integrates and cleans up. Use the source repo and run id from the descriptor:

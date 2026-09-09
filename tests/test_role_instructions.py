@@ -79,10 +79,46 @@ def test_finish_requires_split_advice_and_an_actionable_proposal_even_for_trivia
     assert "As the final step of every task, including trivial or read-only ones" in finish
     assert "`owner_validator.py --split-advice` with your node id" in finish
     assert "state its result" in finish
-    assert "when a split is advised return a" in finish
-    assert "SplitProposal using the shape in `.github\\agents\\splitter.md`" in finish
-    assert "a top node has no parent to surface it otherwise" in finish
+    assert "`recommend_split` result of true" in finish
+    assert "is a verdict a human must triage, not optional advice" in finish
+    assert "you MUST return a structured SplitProposal" in finish
+    assert "shape in `.github\\agents\\splitter.md`" in finish
+    assert "human's approve/edit/reject gate" in finish
+    assert "A top node surfaces it to the Host directly" in finish
+    assert "Never downgrade a verdict to advisory or take no action" in finish
     assert "Do not mutate the organization yourself" in finish
+
+
+def test_parent_must_route_a_structured_proposal_for_every_child_verdict():
+    text = (PLUGIN / "loops" / "parent.md").read_text(encoding="utf-8")
+    reconcile = section(text, "Plan, delegate, and reconcile")
+    assert "For EACH child's `recommend_split: true` verdict" in reconcile
+    assert "you MUST return a structured SplitProposal" in reconcile
+    assert "shape in `.github\\agents\\splitter.md`" in reconcile
+    assert "Host's human approve/edit/reject gate" in reconcile
+    assert "never treat it as optional advice, silently defer, or take no action" in reconcile
+    assert "PROPOSE growth" not in reconcile
+
+
+def test_host_must_triage_every_returned_proposal_or_verdict_before_proceeding():
+    text = (PLUGIN / "instructions" / "agent-org.instructions.md").read_text(encoding="utf-8")
+    host = section(text, "Host procedure")
+    assert "For each returned SplitProposal or split verdict, the Host MUST use" in host
+    assert "`ask_user` for approve / edit / reject before proceeding" in host
+    assert "A split verdict requires human triage" in host
+    assert "the Host MUST\nNOT treat it as advisory, silently defer, or take no action" in host
+    assert "Require a structured SplitProposal" in host
+    assert "Never mutate topology merely because a verdict is true" in host
+    # Scope profiles reference the authoritative Host policy rather than copying a competing gate.
+    for profile in (PLUGIN / "instructions").glob("agent-org.scope-*.instructions.md"):
+        assert "agent-org.instructions.md" in profile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("role", ["leaf", "parent"])
+def test_role_policy_lines_remain_wrapped(role):
+    text = (PLUGIN / "loops" / f"{role}.md").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        assert len(line) <= 120, line
 
 
 @pytest.mark.parametrize("source,target", [
@@ -105,4 +141,8 @@ def test_runtime_docs_keep_readiness_and_native_completion_contracts():
     assert "### Native child completion annotation" in text
     assert "native-event footer suffix" in text
     assert "human approval" in text
+    assert "maximum observed `inputTokens`" in text
+    assert "split verdict" in text
+    assert "exactly one record" in text
+    assert "Legacy cumulative evidence" in text
     assert "Source tests alone are not evidence of live delivery" in text

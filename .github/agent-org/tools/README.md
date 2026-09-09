@@ -101,9 +101,22 @@ names never select a report.
 
 The event handler publishes its report/readiness promise before asynchronous usage recording. A matching
 post hook awaits it before asking the existing `split_advice` oracle, using that oracle's defaults. Native
-completion totals are authoritative; accumulated usage can be partial, and absent usage is unavailable,
-not zero. Tokens are input/output usage, **not billed AI credits**. A split remains a proposal requiring
-human approval; this annotation changes neither topology nor charters.
+peak context is the session's maximum observed `inputTokens`, including across reused child turns.
+Cumulative CLI `totalTokens`, output tokens, and separate cache counters never contribute. Missing input
+samples make observations partial; no observed input is unavailable, not zero. Peak occupancy is
+**not billed AI credits**. A true `recommend_split` is a verdict requiring human triage, not optional advice:
+return a structured SplitProposal through the Host's `ask_user` approve/edit/reject gate for human approval.
+This annotation changes neither topology nor charters.
+
+Usage recording requires `--usage-record <node> --session <native-session-id> --tokens <peak-input-tokens>`;
+use `--partial` for incomplete input observations. Both providers resolve the same Git common directory.
+An exclusive per-session usage lock and atomic replacement maintain exactly one record at
+`agent-org/usage/<node>/<session>.json`; duplicate reports do not rewrite it, while later higher peaks update
+that same record. Recording failures are surfaced, not silently discarded. The existing `<node>.jsonl` logs
+are never rewritten: split advice still includes their unverified legacy evidence and flags its presence.
+`peak_session_tokens` is the maximum recorded session peak (or null if unavailable); `domain_est_tokens`
+OR that peak reaching `--threshold * --window` returns a split verdict. Legacy cumulative evidence may
+inflate the signal and must be discussed at human triage.
 
 Duplicate project/plugin hooks are idempotent **per chained output**: the next provider preserves the
 preceding provider's modified result using its native-event footer suffix. There is no delivery
