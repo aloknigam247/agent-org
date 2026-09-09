@@ -628,7 +628,7 @@ def test_incomplete_installation_fails_closed_without_using_other_config(git_rep
     assert "configuration audit failed" in warning["additionalContext"]
 
 
-# --- usage log + split-advice (parent's over-burden signal) -----------------------------------------
+# --- peak session context + split-advice (mandatory human-triaged verdict) --------------------------
 
 @pytest.fixture
 def root_split_repo(git_repo):
@@ -647,7 +647,7 @@ def root_split_repo(git_repo):
 ], ids=["small", "default-usage-burden", "custom-limits"])
 def test_root_split_check_cli_uses_org_root_and_existing_advice(root_split_repo, tool, agent, is_root,
                                                              tokens, limits, advised):
-    ov.usage_record(str(root_split_repo), agent, tokens)
+    ov.usage_record(str(root_split_repo), agent, tokens, "native-session")
     common = [sys.executable, str(tool), "--root", str(root_split_repo), *limits]
     advice = subprocess.run([*common, "--split-advice", agent],
                             capture_output=True, text=True, encoding="utf-8", check=True)
@@ -666,9 +666,9 @@ def test_root_split_check_cli_uses_org_root_and_existing_advice(root_split_repo,
 
 def test_usage_record_and_split_advice_over_by_usage(git_repo):
     repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
-    # 'a' owns a tiny domain, but a session burned a lot of tokens -> over threshold by usage
-    ov.usage_record(str(repo), "a", 100)
-    ov.usage_record(str(repo), "a", 130000)  # peak
+    # 'a' owns a tiny domain, but one session's max inputTokens occupied over 60% of the window.
+    ov.usage_record(str(repo), "a", 100, "small-session")
+    ov.usage_record(str(repo), "a", 130000, "large-session")
     adv = ov.split_advice(_HOOK_ORG, "a", str(repo), window=200000, threshold=0.60)  # limit = 120000
     assert adv["peak_session_tokens"] == 130000, adv
     assert adv["recommend_split"] is True and any("peak session" in r for r in adv["reasons"]), adv
@@ -676,14 +676,132 @@ def test_usage_record_and_split_advice_over_by_usage(git_repo):
 
 def test_split_advice_not_over_when_small(git_repo):
     repo = git_repo({"a/small.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
-    ov.usage_record(str(repo), "a", 5000)
+    ov.usage_record(str(repo), "a", 5000, "small-session")
     adv = ov.split_advice(_HOOK_ORG, "a", str(repo), window=200000, threshold=0.60)
     assert adv["recommend_split"] is False, adv
 
 
-def test_usage_record_cli_appends_log(git_repo):
+def test_usage_record_cli_stores_one_peak_and_rejects_unobserved_or_unidentified_usage(git_repo):
     repo = git_repo({"a/x.txt": "x", "b/keep.txt": "x", "shared/keep.txt": "x"}, _HOOK_ORG)
-    subprocess.run([sys.executable, str(TOOL), "--usage-record", "a", "--tokens", "150000", "--root", str(repo)],
-                   capture_output=True, text=True)
-    log = repo / ".git" / "agent-org" / "usage" / "a.jsonl"
-    assert log.exists() and json.loads(log.read_text(encoding="utf-8").splitlines()[0])["tokens"] == 150000
+    command = [sys.executable, str(TOOL), "--usage-record", "a", "--root", str(repo)]
+    args = ["--session", "native-session", "--tokens", "150000", "--partial"]
+    for recorded in (True, False):
+        result = subprocess.run([*command, *args], capture_output=True, text=True, check=True)
+        assert json.loads(result.stdout) == {"recorded": recorded}
+    directory = repo / ".git" / "agent-org" / "usage" / "a"
+    assert [p.name for p in directory.iterdir()] == ["native-session.json"]
+    assert json.loads((directory / "native-session.json").read_text(encoding="utf-8")) == {
+        "session_id": "native-session", "tokens": 150000, "metric": "peak_input_tokens", "partial": True,
+    }
+    for invalid in ([], ["--tokens", "0"], ["--session", "missing"], ["--session", "bad", "--tokens", "-1"]):
+        result = subprocess.run([*command, *invalid], capture_output=True, text=True)
+        assert result.returncode != 0, result.stdout
+    assert [p.name for p in directory.iterdir()] == ["native-session.json"]
+
+
+def test_usage_is_one_monotonic_peak_per_node_and_session(root_split_repo):
+    repo = root_split_repo
+    assert ov.usage_record(repo, "a", 100, "one") == {"recorded": True}
+    assert ov.usage_record(repo, "a", 100, "one") == {"recorded": False}
+    assert ov.usage_record(repo, "a", 90, "one") == {"recorded": False}
+    assert ov.usage_record(repo, "a", 150, "one", partial=True) == {"recorded": True}
+    assert ov.usage_record(repo, "a", 120, "one") == {"recorded": False}
+    ov.usage_record(repo, "a", 140, "two")
+    ov.usage_record(repo, "b", 800, "one")
+    directory = repo / ".git" / "agent-org" / "usage" / "a"
+    assert sorted(p.name for p in directory.iterdir()) == ["one.json", "two.json"]
+    advice = ov.split_advice(_HOOK_ORG, "a", repo, window=1000, threshold=0.2)
+    assert advice["peak_session_tokens"] == 150  # neither sums nor another node's session
+    assert advice["peak_session_tokens_partial"] is True
+    assert advice["recommend_split"] is False
+
+
+@pytest.mark.parametrize("bad", [None, -1, True, "12", 1.5])
+def test_usage_record_rejects_invalid_peaks(root_split_repo, bad):
+    with pytest.raises(ValueError, match="observed nonnegative integer"):
+        ov.usage_record(root_split_repo, "a", bad, "bad")
+
+
+def test_usage_atomic_claim_and_failed_write_are_retryable(root_split_repo, monkeypatch):
+    repo = root_split_repo
+    native_open, native_replace = ov.os.open, ov.os.replace
+    opened = []
+
+    def observe_open(path, flags, mode):
+        opened.append((Path(path), flags))
+        return native_open(path, flags, mode)
+
+    def failed_replace(source, destination):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(ov.os, "open", observe_open)
+    monkeypatch.setattr(ov.os, "replace", failed_replace)
+    with pytest.raises(OSError, match="simulated write failure"):
+        ov.usage_record(repo, "a", 12, "retry")
+    directory = repo / ".git" / "agent-org" / "usage" / "a"
+    assert list(directory.iterdir()) == []
+    assert opened[0][0] == directory / "retry.lock"
+    assert opened[0][1] & ov.os.O_EXCL and opened[0][1] & ov.os.O_CREAT
+    monkeypatch.setattr(ov.os, "replace", native_replace)
+    assert ov.usage_record(repo, "a", 12, "retry") == {"recorded": True}
+    assert ov.usage_record(repo, "a", 12, "retry") == {"recorded": False}
+
+
+def test_usage_busy_claim_is_not_stolen(root_split_repo, monkeypatch):
+    directory = root_split_repo / ".git" / "agent-org" / "usage" / "a"
+    directory.mkdir(parents=True)
+    lock = directory / "busy.lock"
+    lock.write_text("another provider", encoding="utf-8")
+    times = iter([0, 6])
+    monkeypatch.setattr(ov.time, "monotonic", lambda: next(times))
+    with pytest.raises(TimeoutError, match="usage recording lock is busy"):
+        ov.usage_record(root_split_repo, "a", 12, "busy")
+    assert lock.read_text(encoding="utf-8") == "another provider"
+    assert not (directory / "busy.json").exists()
+
+
+def test_missing_usage_is_unavailable_and_observed_zero_is_preserved(root_split_repo):
+    missing = ov.split_advice(_HOOK_ORG, "a", root_split_repo)
+    assert missing["peak_session_tokens"] is None
+    assert missing["recommend_split"] is False
+    ov.usage_record(root_split_repo, "a", 0, "zero")
+    observed = ov.split_advice(_HOOK_ORG, "a", root_split_repo)
+    assert observed["peak_session_tokens"] == 0
+    assert observed["peak_session_tokens_partial"] is False
+    assert observed["legacy_usage_records"] == 0
+
+
+@pytest.mark.parametrize("domain,peak,window,threshold,verdict", [
+    (60, None, 100, 0.6, True),   # domain alone, no usage observations
+    (60, 0, 100, 0.6, True),      # domain alone, genuine zero usage
+    (0, 60, 100, 0.6, True),      # peak alone at the inclusive boundary
+    (59, 59, 100, 0.6, False),    # neither; never add these signals together
+    (60, 60, 200, 0.6, False),    # custom window changes the decision
+    (60, 60, 100, 0.7, False),    # custom threshold changes the decision
+])
+def test_split_verdict_is_domain_or_peak_with_configurable_limits(root_split_repo, monkeypatch,
+                                                                 domain, peak, window, threshold, verdict):
+    monkeypatch.setattr(ov, "domain_size", lambda *_: {"est_tokens": domain})
+    if peak is not None:
+        ov.usage_record(root_split_repo, "a", peak, "native")
+    result = ov.split_advice(_HOOK_ORG, "a", root_split_repo, window, threshold)
+    assert result["recommend_split"] is verdict
+    assert result["peak_session_tokens"] == peak
+    assert result["domain_est_tokens"] == domain
+    assert result["window"] == window and result["threshold"] == threshold
+
+
+def test_legacy_usage_is_untouched_and_explicitly_unverified(root_split_repo):
+    directory = root_split_repo / ".git" / "agent-org" / "usage"
+    directory.mkdir(parents=True)
+    legacy = directory / "a.jsonl"
+    original = b'{"tokens": 150000}\r\n{}\r\n{"tokens": null}\r\nnot-json\r\n'
+    legacy.write_bytes(original)
+    ov.usage_record(root_split_repo, "a", 100, "new-session")
+    result = ov.split_advice(_HOOK_ORG, "a", root_split_repo)
+    assert result["peak_session_tokens"] == 150000
+    assert result["legacy_usage_records"] == 1
+    assert result["peak_session_tokens_partial"] is True
+    assert result["recommend_split"] is True
+    assert "unverified legacy usage" in result["reasons"][0]
+    assert legacy.read_bytes() == original

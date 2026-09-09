@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -597,40 +598,96 @@ def _task_context(payload, org, context):
     return {"modifiedArgs": {**args, "prompt": "\n".join(headers) + "\n\n" + prompt}}
 
 
-def usage_record(root, agent, tokens):
-    """Append one session's token consumption for a node to `.git/agent-org/usage/<node>.jsonl`. Written
-    by the extension (from usage events) or a post-run step (from the usage file's agentMetrics); read by
-    the parent at reconciliation. Persistent + git-local, so a burden trend survives across sessions."""
+def _valid_peak(tokens):
+    return isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0
+
+
+def usage_record(root, agent, tokens, session, *, partial=False):
+    """Record max observed inputTokens, once per (node, session), never billed or cumulative usage.
+
+    Providers compete for an O_EXCL session lock in the Git common directory. Identical reports are
+    no-ops; later turns or richer observations atomically raise the same session's peak, not append
+    another sample. Legacy <node>.jsonl logs remain byte-for-byte untouched. New records live in
+    usage/<node>/<session>.json, independently of completion-footer delivery.
+    """
+    agent, session = state_id(agent), state_id(session)
+    if not _valid_peak(tokens):
+        raise ValueError("peak context tokens must be an observed nonnegative integer")
     d = _state_dir(root, "usage")
-    if d:
+    if d is None:
+        raise ValueError("usage recording requires a Git workspace")
+    directory = d / agent
+    directory.mkdir(exist_ok=True)
+    target = directory / f"{session}.json"
+    lock = directory / f"{session}.lock"
+    deadline = time.monotonic() + 5
+    while True:
         try:
-            with (d / f"{agent}.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"tokens": int(tokens)}) + "\n")
-        except Exception:
-            pass
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"usage recording lock is busy: {lock}")
+            time.sleep(0.01)
+    temporary = directory / f"{session}-{uuid.uuid4()}.tmp"
+    try:
+        os.close(handle)
+        previous = json.loads(target.read_text(encoding="utf-8")) if target.exists() else None
+        if previous is not None:
+            if previous.get("session_id") != session or not _valid_peak(previous.get("tokens")):
+                raise ValueError(f"invalid peak context record: {target}")
+            tokens = max(tokens, previous["tokens"])
+            partial = partial or previous.get("partial", False)
+        record = {"session_id": session, "tokens": tokens, "metric": "peak_input_tokens", "partial": bool(partial)}
+        if record == previous:
+            return {"recorded": False}
+        with temporary.open("x", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(record) + "\n")
+        os.replace(temporary, target)
+        return {"recorded": True}
+    finally:
+        temporary.unlink(missing_ok=True)
+        lock.unlink()
 
 
 def split_advice(org, agent, root, window=200000, threshold=0.60):
-    """Advise whether a node is over-burdened, so a **parent** can propose a split even if the child did
-    not self-report. Combines two signals: the static domain-size proxy (--size) and the peak per-session
-    token consumption recorded in the usage log. Over-threshold on either => recommend a split."""
+    """Return a human-triaged split verdict from domain size OR peak session context occupancy.
+
+    Each new session record is its max inputTokens; peak_session_tokens is the max across records.
+    Missing observations are None, not zero. Historical untyped JSONL records are retained as legacy
+    evidence, explicitly flagged because their cumulative totals cannot be converted into context peaks.
+    """
     est = domain_size(org, agent, root)["est_tokens"]
-    peak = 0
+    peak = None
+    partial = False
+    legacy = 0
     d = _state_dir(root, "usage")
-    f = (d / f"{agent}.jsonl") if d else None
-    if f and f.exists():
-        for line in f.read_text(encoding="utf-8").splitlines():
-            try:
-                peak = max(peak, int(json.loads(line).get("tokens", 0)))
-            except Exception:
-                pass
+    agent = state_id(agent)
+    records = []
+    if d:
+        f = d / f"{agent}.jsonl"
+        if f.exists():
+            records.extend((line, True) for line in f.read_text(encoding="utf-8").splitlines())
+        records.extend((f.read_text(encoding="utf-8"), False) for f in (d / agent).glob("*.json"))
+    for line, historical in records:
+        try:
+            record = json.loads(line)
+            value = record.get("tokens")
+            if _valid_peak(value):
+                peak = value if peak is None else max(peak, value)
+                legacy += int(historical)
+                partial = partial or historical or record.get("partial", False) is True
+        except (ValueError, AttributeError):
+            pass
     limit = threshold * window
     reasons = []
     if est >= limit:
         reasons.append(f"domain est_tokens {est} >= {limit:.0f}")
-    if peak >= limit:
-        reasons.append(f"peak session tokens {peak} >= {limit:.0f}")
+    if peak is not None and peak >= limit:
+        reasons.append(f"peak session tokens {peak} >= {limit:.0f}" +
+                       (" (includes unverified legacy usage)" if legacy else " (peak context occupancy)"))
     return {"agent": agent, "domain_est_tokens": est, "peak_session_tokens": peak,
+            "peak_session_tokens_partial": bool(partial), "legacy_usage_records": legacy,
             "window": window, "threshold": threshold, "recommend_split": bool(reasons), "reasons": reasons}
 
 
@@ -738,24 +795,27 @@ def main(argv=None):
     parser.add_argument("--record-acting", action="store_true",
                         help="userPromptSubmitted hook: read a payload on stdin, record sessionId -> node")
     parser.add_argument("--usage-record", metavar="NODE",
-                        help="append a session's token consumption for NODE to the usage log (with --tokens)")
-    parser.add_argument("--tokens", type=int, default=0, help="token count for --usage-record")
+                        help="atomically record NODE's session peak input context (with --session and --tokens)")
+    parser.add_argument("--tokens", type=int, help="observed max inputTokens for --usage-record, never CLI totalTokens")
+    parser.add_argument("--partial", action="store_true", help="peak context observations are incomplete")
     parser.add_argument("--split-advice", metavar="NODE",
-                        help="advise whether NODE is over-burdened (domain size + peak usage) -> split")
+                        help="human-triaged split verdict from domain size OR peak session context")
     parser.add_argument("--root-split-check", metavar="NODE",
                         help="report whether NODE is the org root and its current split recommendation")
     parser.add_argument("--checkpoint", action="store_true", help="record the reconciled hybrid source snapshot")
     parser.add_argument("--drift", action="store_true", help="report managed files changed since reconciliation")
     parser.add_argument("--foreign", action="store_true", help="read foreign-write audit records")
     parser.add_argument("--post-hook", action="store_true", help="postToolUse: record completion and return a warning")
-    parser.add_argument("--session", help="top-level session id for --foreign")
+    parser.add_argument("--session", help="native session id for --usage-record; top-level session id for --foreign")
     args = parser.parse_args(argv)
 
     if args.record_acting:
         return _run_record_acting()
 
     if args.usage_record:
-        usage_record(args.root, args.usage_record, args.tokens)
+        if not args.session or args.tokens is None:
+            parser.error("--usage-record requires --session and observed --tokens")
+        print(json.dumps(usage_record(args.root, args.usage_record, args.tokens, args.session, partial=args.partial)))
         return 0
 
     if args.hook or args.post_hook:
