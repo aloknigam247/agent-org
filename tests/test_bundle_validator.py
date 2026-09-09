@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
 import bundle_validator as bv  # noqa: E402
+import run as eval_run  # noqa: E402
 
 ORG = {"version": 3, "root": "root", "nodes": [
     {"id": "root", "charter": {"domain": ["shared/**", "/.github/agent-org/org.json"]},
@@ -63,11 +64,25 @@ def test_cli_explicit_org_override(repo, file_tree, monkeypatch, capsys, absolut
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
 
 
-def test_cli_requires_canonical_org(repo):
+@pytest.mark.parametrize("directory", [False, True], ids=["missing", "directory"])
+def test_cli_requires_canonical_org(repo, directory):
     root = repo({})
-    (root / bv.ORG_PATH).unlink()
+    canonical = root / bv.ORG_PATH
+    canonical.unlink()
+    if directory:
+        canonical.mkdir()
     with pytest.raises(FileNotFoundError, match=r"Missing canonical organization: .*\.github[/\\]agent-org[/\\]org\.json"):
         bv.main(["--root", str(root)])
+
+
+@pytest.mark.parametrize("absolute", [False, True], ids=["repo-relative", "absolute"])
+def test_cli_requires_explicit_org_candidate(repo, absolute):
+    root = repo({})
+    candidate = Path("candidates/missing.json")
+    selected = str(root / candidate) if absolute else str(candidate)
+    with pytest.raises(FileNotFoundError) as error:
+        bv.main(["--root", str(root), "--org", selected])
+    assert str(error.value) == f"Missing organization candidate: {root / candidate}"
 
 
 def test_cli_rejects_malformed_canonical_org(repo):
@@ -81,6 +96,32 @@ def test_cli_ignores_unrelated_root_file(repo, capsys):
     root = repo({"org.json": "{not an installed organization"})
     assert bv.main(["--root", str(root)]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+
+def test_runner_reads_canonical_org_from_repo_root(repo, file_tree, monkeypatch):
+    root = repo({"org.json": "{not an installed organization"})
+    (root / bv.ORG_PATH).write_text(json.dumps(ORG), encoding="utf-8-sig")
+    monkeypatch.chdir(file_tree({bv.ORG_PATH.as_posix(): "{not the requested repository"}))
+    assert eval_run._read_org(root) == ORG
+
+
+@pytest.mark.parametrize("directory", [False, True], ids=["missing", "directory"])
+def test_runner_requires_canonical_org(repo, directory):
+    root = repo({"org.json": json.dumps(ORG)})
+    canonical = root / bv.ORG_PATH
+    canonical.unlink()
+    if directory:
+        canonical.mkdir()
+    with pytest.raises(FileNotFoundError) as error:
+        eval_run._read_org(root)
+    assert str(error.value) == f"Missing organization candidate: {canonical}"
+
+
+def test_runner_rejects_malformed_canonical_org(repo):
+    root = repo({})
+    (root / bv.ORG_PATH).write_text("{invalid", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        eval_run._read_org(root)
 
 
 def test_front_matter_scalar_and_lists():

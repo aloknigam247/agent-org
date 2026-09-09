@@ -14,7 +14,7 @@ def repo(tmp_path):
     subprocess.run(["git", "init", "-q", "-b", "trunk", str(tmp_path)], check=True)
     tool_dir = tmp_path / ".github" / "agent-org" / "tools"
     tool_dir.mkdir(parents=True)
-    for name in ("hook.ps1", "owner_validator.py", "org_config.py"):
+    for name in ("hook.ps1", "owner_validator.py"):
         shutil.copy2(PLUGIN / "tools" / name, tool_dir / name)
     org = {
         "version": 3, "root": "coordinator", "scope": ["**"], "nodes": [

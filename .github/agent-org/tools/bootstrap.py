@@ -9,10 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import org_config as config_paths  # noqa: E402
-
-ORG_PATH = config_paths.ORG_PATH
+ORG_PATH = ".github/agent-org/org.json"
 
 
 class BootstrapError(ValueError):
@@ -172,7 +169,7 @@ def _runtime_files(org, source, *, paths_only):
     for name in ("agent-org-design", "agent-org-wiki-curate"):
         copy(f".github/skills/{name}/SKILL.md", assets["skills"] / name / "SKILL.md")
     for name in (
-        "README.md", "bootstrap.py", "org_config.py",
+        "README.md", "bootstrap.py",
         "owner_validator.py", "requirements.txt", "worktree.py",
     ):
         copy(f".github/agent-org/tools/{name}", assets["root"] / "tools" / name)
@@ -388,7 +385,10 @@ def check_runtime(repo, *, org_path=None, source=None):
     """Read-only canonical runtime readiness check, with an explicit candidate override."""
     repo, _ = _git_paths(repo)
     try:
-        file = config_paths.config_path(repo, explicit=org_path)
+        file = repo / (ORG_PATH if org_path is None else org_path)
+        if not file.is_file():
+            label = "canonical organization" if org_path is None else "organization candidate"
+            raise FileNotFoundError(f"Missing {label}: {file}")
         org = json.loads(file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
         raise BootstrapError(str(error)) from error
